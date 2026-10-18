@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, render_template_string, send_file
+from flask import Flask, request, jsonify, render_template_string, send_file, url_for
 import json
 import os
 import time
@@ -21,6 +21,9 @@ if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
+
+SERVER_LOGO_FILENAME = "server_logo.webp"
+SERVER_LOGO_PATH = os.path.join(UPLOAD_FOLDER, SERVER_LOGO_FILENAME)
 
 MAX_HISTORY = 20
 undo_stack = []
@@ -53,7 +56,20 @@ def recalculate_all(teams):
         team["points"] = tot
     return teams
 
+def auto_assign_winner_if_one_left(teams):
+    """अगर सिर्फ 1 टीम जिंदा बचती है, तो उसे ऑटोमेटिक #1 पोजीशन और WWCD दे दी जाए"""
+    active = [t for t in teams if not t.get("absent", False)]
+    alive = [t for t in active if any(p == 1 for p in t.get("players", []))]
+    if len(active) > 1 and len(alive) == 1:
+        winner = alive[0]
+        if winner.get("position", 0) != 1:
+            winner["position"] = 1
+            k, p, tot = calculate_points(winner)
+            winner["placement_points"] = p
+            winner["points"] = tot
+
 def save(teams):
+    auto_assign_winner_if_one_left(teams)
     recalculate_all(teams)
     with file_lock:
         if os.path.exists(DATA_FILE):
@@ -67,12 +83,16 @@ def load():
     with file_lock:
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
-                return recalculate_all(json.load(f))
+                data = json.load(f)
+                auto_assign_winner_if_one_left(data)
+                return recalculate_all(data)
         except Exception:
             if os.path.exists(DATA_FILE + ".bak"):
                 try:
                     with open(DATA_FILE + ".bak", "r", encoding="utf-8") as f:
-                        return recalculate_all(json.load(f))
+                        data = json.load(f)
+                        auto_assign_winner_if_one_left(data)
+                        return recalculate_all(data)
                 except Exception: return []
             return []
 
@@ -85,18 +105,13 @@ def save_state_for_undo():
     redo_stack.clear()
 
 def load_config():
-    default_cfg = {"tournament": "ENI ESPORTS CHAMPIONSHIP", "match": "MATCH 1", "map": "ERANGEL", "total_matches": 10}
+    default_cfg = {"tournament": "ESPORTS NATION INDIA", "match": "MATCH 1", "map": "ERANGEL", "total_matches": 10}
     if not os.path.exists(CONFIG_FILE): return default_cfg
     with file_lock:
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 return {**default_cfg, **json.load(f)}
         except Exception:
-            if os.path.exists(CONFIG_FILE + ".bak"):
-                try:
-                    with open(CONFIG_FILE + ".bak", "r", encoding="utf-8") as f:
-                        return {**default_cfg, **json.load(f)}
-                except Exception: return default_cfg
             return default_cfg
 
 def save_config(config):
@@ -120,6 +135,7 @@ BUILTIN_PRESETS = {
 
 def load_themes():
     default_data = {
+        "admin_theme": "Classic Gold",
         "matches": {
             "MATCH 1": copy.deepcopy(BUILTIN_PRESETS["Classic Gold"]),
             "MATCH 2": copy.deepcopy(BUILTIN_PRESETS["Royal Blue"]),
@@ -132,6 +148,7 @@ def load_themes():
             with open(THEMES_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 if "matches" not in data: data["matches"] = default_data["matches"]
+                if "admin_theme" not in data: data["admin_theme"] = "Classic Gold"
                 return data
         except Exception: return default_data
 
@@ -141,7 +158,7 @@ def save_themes(data):
             json.dump(data, f, indent=2)
 
 # =========================================================
-# ADMIN PAGE HTML & JS
+# PROFESSIONAL ADMIN PAGE HTML & JS
 # =========================================================
 
 ADMIN_HTML = r"""
@@ -150,55 +167,56 @@ ADMIN_HTML = r"""
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>ENI PRODUCTION | ESPORTS DASHBOARD</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<title>ESPORTS NATION INDIA | PROFESSIONAL DASHBOARD</title>
 
-<style>
+<style id="adminDynamicTheme">
 @import url('https://fonts.googleapis.com/css2?family=Teko:wght@500;600;700&family=Rajdhani:wght@500;600;700;800&display=swap');
 
 :root {
-    --bg-main: #03060f;
-    --card-bg: rgba(13, 22, 38, 0.7);
+    --bg-main: #020408;
+    --card-bg: rgba(13, 22, 38, 0.88);
     --gold: #f2c400;
     --cyan: #00e5ff;
     --red: #ff2a55;
     --green: #00ff66;
-    --glass-border: rgba(255,255,255,0.08);
+    --glass-border: rgba(255,255,255,0.1);
 }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 body {
     margin: 0; padding: 0;
-    background: radial-gradient(circle at top, #0a1122 0%, var(--bg-main) 100%);
+    background: radial-gradient(circle at top, #091325 0%, var(--bg-main) 100%);
     color: #ffffff;
     font-family: 'Rajdhani', sans-serif;
     min-height: 100vh;
-    padding-bottom: 80px;
+    display: flex;
+    flex-direction: column;
 }
 
 .sticky-header {
     position: sticky; top: 0; z-index: 1000;
-    background: rgba(5, 9, 20, 0.85); backdrop-filter: blur(16px);
-    border-bottom: 1px solid var(--glass-border); padding: 12px 15px;
+    background: rgba(3, 7, 16, 0.95); backdrop-filter: blur(18px);
+    border-bottom: 1px solid var(--glass-border); padding: 12px 20px;
     display: flex; justify-content: space-between; align-items: center;
-    box-shadow: 0 6px 25px rgba(0,0,0,0.6);
+    box-shadow: 0 10px 30px rgba(0,0,0,0.7);
     flex-wrap: wrap; gap: 10px;
 }
 
 .menu-dots-btn {
     background: rgba(255,255,255,0.05); border: 1px solid var(--glass-border);
-    color: var(--gold); padding: 6px 12px; border-radius: 8px; cursor: pointer;
+    color: var(--gold); padding: 6px 14px; border-radius: 8px; cursor: pointer;
     font-size: 18px; font-weight: 800; margin-right: 12px; transition: all 0.3s ease;
 }
-.menu-dots-btn:hover { background: rgba(242,196,0,0.15); border-color: var(--gold); box-shadow: 0 0 10px rgba(242,196,0,0.3); }
+.menu-dots-btn:hover { background: rgba(242,196,0,0.15); border-color: var(--gold); box-shadow: 0 0 12px rgba(242,196,0,0.4); }
 
-.brand-container { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
-.brand h1 { margin: 0; font-size: 28px; font-family: 'Teko', sans-serif; color: var(--gold); letter-spacing: 1.5px; text-shadow: 0 0 12px rgba(242,196,0,0.5); line-height: 1; }
-.brand span { font-size: 11px; color: var(--cyan); font-weight: 700; letter-spacing: 2px; }
+.brand-container { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.server-logo { width: 40px; height: 40px; object-fit: contain; border-radius: 8px; border: 1px solid var(--gold); box-shadow: 0 0 10px rgba(242,196,0,0.3); }
+.brand h1 { margin: 0; font-size: 26px; font-family: 'Teko', sans-serif; color: var(--gold); letter-spacing: 1.5px; text-shadow: 0 0 12px rgba(242,196,0,0.4); line-height: 1; }
+.brand span { font-size: 11px; color: var(--cyan); font-weight: 700; letter-spacing: 2.5px; display: block; }
 
 .sync-status {
     display: flex; align-items: center; gap: 6px; margin-left: 10px; font-size: 11px; font-weight: 800; letter-spacing: 1px;
-    padding: 4px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.1); background: rgba(0,0,0,0.3); transition: 0.3s;
+    padding: 5px 12px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.1); background: rgba(0,0,0,0.4);
 }
 .sync-dot { width: 8px; height: 8px; border-radius: 50%; }
 .sync-live { color: var(--green); border-color: rgba(0, 255, 102, 0.3); }
@@ -216,37 +234,51 @@ body {
     cursor: pointer; transition: 0.2s; 
 }
 .btn-undo-redo:hover { background: rgba(0,229,255,0.2); border-color: var(--cyan); }
-.btn-undo-redo:active { transform: scale(0.9); }
 
 .stat-badge {
     background: rgba(0, 229, 255, 0.08); border: 1px solid rgba(0, 229, 255, 0.2);
-    padding: 4px 12px; border-radius: 6px; display: flex; flex-direction: column; align-items: center; min-width: 65px; box-shadow: inset 0 0 10px rgba(0, 229, 255, 0.05);
+    padding: 4px 12px; border-radius: 6px; display: flex; flex-direction: column; align-items: center; min-width: 65px;
 }
 .stat-badge span { font-size: 9px; color: #9da9b8; font-weight: 700; text-transform: uppercase; }
 .stat-badge strong { font-size: 16px; color: var(--cyan); font-weight: 800; line-height: 1.1; }
 .stat-badge.players strong { color: var(--green); }
-.stat-badge.players { background: rgba(0, 255, 102, 0.08); border-color: rgba(0, 255, 102, 0.2); box-shadow: inset 0 0 10px rgba(0, 255, 102, 0.05); }
+.stat-badge.players { background: rgba(0, 255, 102, 0.08); border-color: rgba(0, 255, 102, 0.2); }
 
-.container { padding: 15px; max-width: 1400px; margin: 0 auto; }
+.btn-top-reset {
+    background: linear-gradient(135deg, #b30000, #ff1a1a);
+    color: #fff;
+    border: 1px solid #ff4d4d;
+    padding: 6px 14px;
+    font-size: 12px;
+    font-weight: 800;
+    border-radius: 6px;
+    cursor: pointer;
+    box-shadow: 0 0 10px rgba(255, 26, 26, 0.4);
+    transition: 0.2s;
+    font-family: 'Rajdhani', sans-serif;
+}
+.btn-top-reset:hover { background: #ff3333; transform: scale(1.05); }
+
+.container { padding: 20px; max-width: 1400px; margin: 0 auto; flex: 1; width: 100%; }
 
 .glass-card {
-    background: var(--card-bg); backdrop-filter: blur(12px); border: 1px solid var(--glass-border);
-    border-radius: 12px; padding: 16px; margin-bottom: 16px; box-shadow: 0 10px 40px rgba(0,0,0,0.4);
+    background: var(--card-bg); backdrop-filter: blur(14px); border: 1px solid var(--glass-border);
+    border-radius: 12px; padding: 16px; margin-bottom: 16px; box-shadow: 0 10px 40px rgba(0,0,0,0.5);
 }
 
 .links-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
 .obs-link {
-    background: linear-gradient(135deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01)); border: 1px solid var(--glass-border);
+    background: linear-gradient(135deg, rgba(255,255,255,0.04), rgba(255,255,255,0.01)); border: 1px solid var(--glass-border);
     padding: 12px; border-radius: 8px; text-align: center; text-decoration: none; color: #b0c4de; font-size: 13px; font-weight: 700;
     transition: all 0.3s ease; box-shadow: 0 4px 15px rgba(0,0,0,0.2);
 }
-.obs-link:hover { background: rgba(0,229,255,0.1); border-color: var(--cyan); color: white; transform: translateY(-2px); box-shadow: 0 6px 20px rgba(0,229,255,0.2); }
+.obs-link:hover { background: rgba(0,229,255,0.12); border-color: var(--cyan); color: white; transform: translateY(-2px); box-shadow: 0 6px 20px rgba(0,229,255,0.25); }
 
 input, select, textarea {
-    background: rgba(0,0,0,0.5); color: white; border: 1px solid rgba(255,255,255,0.15); padding: 12px; border-radius: 8px;
+    background: rgba(0,0,0,0.6); color: white; border: 1px solid rgba(255,255,255,0.15); padding: 12px; border-radius: 8px;
     font-size: 14px; font-family: 'Rajdhani', sans-serif; font-weight: 700; width: 100%; outline: none; transition: all 0.3s ease;
 }
-input:focus, select:focus, textarea:focus { border-color: var(--cyan); box-shadow: 0 0 12px rgba(0,229,255,0.3); background: rgba(0,0,0,0.7); }
+input:focus, select:focus, textarea:focus { border-color: var(--cyan); box-shadow: 0 0 12px rgba(0,229,255,0.35); background: rgba(0,0,0,0.8); }
 
 .btn {
     border: none; border-radius: 8px; padding: 12px 16px; cursor: pointer; font-weight: 800; font-size: 14px; font-family: 'Rajdhani', sans-serif;
@@ -254,7 +286,6 @@ input:focus, select:focus, textarea:focus { border-color: var(--cyan); box-shado
     display: inline-flex; align-items: center; justify-content: center; gap: 6px; box-shadow: 0 4px 15px rgba(0,0,0,0.3);
 }
 .btn:hover { transform: translateY(-2px); filter: brightness(1.15); box-shadow: 0 6px 20px rgba(0,0,0,0.4); }
-.btn:active { transform: scale(0.96) translateY(0); }
 .btn-primary { background: linear-gradient(135deg, #0077b6, #00bfff); color: #fff; border: 1px solid #00bfff; }
 .btn-gold { background: linear-gradient(135deg, #c89d00, var(--gold)); color: #040911; }
 .btn-green { background: linear-gradient(135deg, #00994d, var(--green)); color: #040911; }
@@ -263,25 +294,42 @@ input:focus, select:focus, textarea:focus { border-color: var(--cyan); box-shado
 
 .search-bar { border-color: rgba(242,196,0,0.4) !important; font-size:16px; margin-bottom: 15px; }
 
-/* Teams Grid & Wipe Red Box Fix */
+/* Teams Grid & Cards */
 .teams-grid { display: grid; grid-template-columns: 1fr; gap: 16px; transition: 0.3s; }
 @media(min-width: 768px) { .teams-grid { grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); } }
 .teams-grid.compact-mode { grid-template-columns: 1fr; gap: 8px; }
 @media(min-width: 768px) { .teams-grid.compact-mode { grid-template-columns: repeat(auto-fill, minmax(450px, 1fr)); } }
 
 .team-card {
-    background: linear-gradient(160deg, rgba(16,28,48,0.95), rgba(6,12,24,0.98)); border: 1px solid var(--glass-border);
-    border-left: 4px solid var(--cyan); border-radius: 12px; padding: 16px; transition: all 0.3s ease;
+    background: linear-gradient(160deg, rgba(16,28,48,0.92), rgba(6,12,24,0.97)); border: 1px solid var(--glass-border);
+    border-left: 4px solid var(--cyan); border-radius: 12px; padding: 14px; transition: all 0.3s ease;
     position: relative; overflow: hidden; box-shadow: 0 6px 20px rgba(0,0,0,0.4);
 }
-.team-card.eliminated { border-left-color: var(--red); border: 1px solid rgba(255,42,85,0.6); background: linear-gradient(160deg, rgba(40, 10, 18, 0.95), rgba(20, 5, 8, 0.98)) !important; box-shadow: 0 0 15px rgba(255,42,85,0.3); }
+.team-card.eliminated { 
+    border-left-color: var(--red) !important; 
+    border: 1px solid rgba(255,42,85,0.8) !important; 
+    background: linear-gradient(160deg, rgba(45, 10, 18, 0.98), rgba(20, 3, 6, 0.99)) !important; 
+    box-shadow: 0 0 20px rgba(255,42,85,0.4) !important; 
+}
 .team-card.not-present { border-left-color: #555; background: linear-gradient(160deg, rgba(20,20,20,0.9), rgba(10,10,10,0.95)); opacity: 0.4; }
-.team-card.winner { border: 2px solid var(--gold); background: linear-gradient(160deg, rgba(40,30,10,0.95), rgba(20,15,5,0.98)); box-shadow: 0 0 20px rgba(242, 196, 0, 0.4); }
 
-.tc-header { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+/* Chicken Dinner Winner Golden Box Highlight */
+.team-card.winner {
+    border: 2px solid var(--gold) !important;
+    border-left: 6px solid var(--gold) !important;
+    background: linear-gradient(160deg, rgba(70, 52, 6, 0.98), rgba(30, 22, 2, 0.99)) !important;
+    box-shadow: 0 0 35px rgba(242, 196, 0, 0.75) !important;
+    animation: goldPulse 2s infinite alternate;
+}
+@keyframes goldPulse {
+    0% { box-shadow: 0 0 20px rgba(242, 196, 0, 0.5); }
+    100% { box-shadow: 0 0 45px rgba(242, 196, 0, 0.95); }
+}
+
+.tc-header { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
 .tc-slot { background: rgba(255,255,255,0.08); padding: 4px 8px; border-radius: 6px; font-weight: 800; color: #9da9b8; font-size: 13px; }
-.tc-name { flex: 1; border: none; background: transparent; padding: 0; font-size: 19px; color: var(--gold); text-transform: uppercase; font-weight: 800; min-width: 120px; }
-.btn-elim, .btn-not-present { padding: 6px 12px; font-size:11px; font-weight: 800; border-radius: 6px; cursor: pointer; transition: 0.3s; }
+.tc-name { flex: 1; border: none; background: transparent; padding: 0; font-size: 18px; color: var(--gold); text-transform: uppercase; font-weight: 800; min-width: 110px; }
+.btn-elim, .btn-not-present { padding: 5px 10px; font-size:11px; font-weight: 800; border-radius: 6px; cursor: pointer; transition: 0.3s; }
 .btn-elim { background: rgba(255, 42, 85, 0.15); border: 1px solid var(--red); color: var(--red); }
 .btn-elim:hover { background: var(--red); color: white; }
 .btn-not-present { background: rgba(255, 42, 85, 0.15); border: 1px solid var(--red); color: var(--red); }
@@ -294,30 +342,13 @@ input:focus, select:focus, textarea:focus { border-color: var(--cyan); box-shado
 }
 .player-count-select option { background: #03060f; color: white; }
 
-/* Updated Player Nodes as Compact Circles */
-.tc-players { 
-    display: flex; 
-    justify-content: center; 
-    gap: 12px; 
-    margin-bottom: 12px; 
-    background: rgba(0,0,0,0.3); 
-    padding: 8px 10px; 
-    border-radius: 8px; 
-}
+.tc-players { display: flex; justify-content: center; gap: 10px; margin-bottom: 12px; background: rgba(0,0,0,0.3); padding: 8px 10px; border-radius: 8px; align-items: center; }
 .player-node { 
-    width: 38px; 
-    height: 38px; 
-    border-radius: 50%; 
+    width: 36px; height: 36px; border-radius: 50%; 
     background: linear-gradient(135deg, var(--green), #00b347); 
-    display: flex; 
-    align-items: center; 
-    justify-content: center; 
-    color: #040911; 
-    font-weight: 800; 
-    font-size: 12px; 
-    cursor: pointer; 
-    box-shadow: 0 0 10px rgba(0,255,102,0.4); 
-    border: 2px solid rgba(255,255,255,0.7); 
+    display: flex; align-items: center; justify-content: center; 
+    color: #040911; font-weight: 800; font-size: 12px; cursor: pointer; 
+    box-shadow: 0 0 10px rgba(0,255,102,0.4); border: 2px solid rgba(255,255,255,0.7); 
     transition: all 0.2s ease; 
 }
 .player-node:hover { transform: scale(1.1); filter: brightness(1.15); }
@@ -328,20 +359,20 @@ input:focus, select:focus, textarea:focus { border-color: var(--cyan); box-shado
     box-shadow: 0 0 10px rgba(255,42,85,0.4); 
 }
 
-.tc-controls { display: flex; gap: 8px; margin-bottom: 14px; align-items:center; }
-.tc-controls select { padding: 10px 8px; font-size: 13px; }
-.btn-icon { width: 46px; height: 46px; padding: 0; display: flex; align-items: center; justify-content: center; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.15); color: white; font-size: 22px; font-weight:bold; border-radius: 8px; cursor: pointer; }
+.tc-controls { display: flex; gap: 8px; margin-bottom: 12px; align-items:center; }
+.tc-controls select { padding: 9px 8px; font-size: 13px; }
+.btn-icon { width: 42px; height: 42px; padding: 0; display: flex; align-items: center; justify-content: center; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.15); color: white; font-size: 20px; font-weight:bold; border-radius: 8px; cursor: pointer; }
 .btn-icon.plus { background: rgba(0, 255, 102, 0.1); border-color: rgba(0, 255, 102, 0.4); color: var(--green); }
 
-.tc-stats { display: flex; justify-content: space-between; background: rgba(0,0,0,0.5); border-radius: 8px; padding: 10px; border: 1px solid rgba(255,255,255,0.05); }
+.tc-stats { display: flex; justify-content: space-between; background: rgba(0,0,0,0.5); border-radius: 8px; padding: 8px 10px; border: 1px solid rgba(255,255,255,0.05); }
 .tc-stat-box { text-align: center; flex: 1; }
 .tc-stat-box span { display: block; font-size: 9px; color: #7a8a9e; font-weight: 700; text-transform: uppercase; margin-bottom:2px;}
-.tc-stat-box strong { font-size: 17px; font-weight: 800; }
+.tc-stat-box strong { font-size: 16px; font-weight: 800; }
 .tc-stat-box.fin strong { color: var(--green); }
 .tc-stat-box.pts strong { color: var(--cyan); }
-.tc-stat-box.tot strong { color: var(--gold); font-size: 20px; }
-.logo-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 11px; background: rgba(255,255,255,0.03); padding: 8px; border-radius: 8px; margin-top: 12px; }
-.logo-row img { width: 26px; height: 26px; object-fit: contain; border-radius: 4px; }
+.tc-stat-box.tot strong { color: var(--gold); font-size: 18px; }
+.logo-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 11px; background: rgba(255,255,255,0.03); padding: 6px 10px; border-radius: 8px; margin-top: 10px; }
+.logo-row img { width: 24px; height: 24px; object-fit: contain; border-radius: 4px; }
 
 /* COMPACT MODE */
 .compact-mode .team-card { padding: 10px 12px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; }
@@ -364,9 +395,8 @@ input:focus, select:focus, textarea:focus { border-color: var(--cyan); box-shado
 .modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); backdrop-filter: blur(8px); z-index: 3000; display: none; align-items: center; justify-content: center; padding: 20px; }
 .modal.show { display: flex; animation: fadeIn 0.3s ease; }
 @keyframes fadeIn { from{opacity:0; transform:scale(0.95);} to{opacity:1; transform:scale(1);} }
-.modal-content { background: linear-gradient(135deg, #0d1626, #070e1c); border: 1px solid var(--gold); border-radius: 12px; width: 100%; max-width: 500px; max-height: 85vh; overflow-y: auto; padding: 25px; box-shadow: 0 15px 50px rgba(0,0,0,0.8); }
+.modal-content { background: linear-gradient(135deg, #0d1626, #070e1c); border: 1px solid var(--gold); border-radius: 12px; width: 100%; max-width: 650px; max-height: 85vh; overflow-y: auto; padding: 25px; box-shadow: 0 15px 50px rgba(0,0,0,0.8); }
 
-.chart-container { position: relative; height: 300px; width: 100%; margin-top: 15px; background: rgba(0,0,0,0.4); border-radius: 8px; border: 1px solid rgba(255,255,255,0.05); padding: 10px; }
 .toast { position: fixed; bottom: 25px; left: 50%; transform: translateX(-50%) translateY(20px); background: linear-gradient(135deg, var(--gold), #c89d00); color: #000; padding: 12px 30px; border-radius: 30px; font-weight: 800; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; box-shadow: 0 10px 30px rgba(242, 196, 0, 0.4); opacity: 0; visibility: hidden; transition: 0.3s; z-index: 9999; }
 .toast.show { opacity: 1; visibility: visible; transform: translateX(-50%) translateY(0); }
 
@@ -376,9 +406,26 @@ input:focus, select:focus, textarea:focus { border-color: var(--cyan); box-shado
 .podium-step.pos-2 { height: 130px; border-color: silver; background: rgba(192,192,192,0.2); }
 .podium-step.pos-3 { height: 100px; border-color: #cd7f32; background: rgba(205,127,50,0.2); }
 .podium-rank { font-size: 32px; font-weight: 800; font-family: 'Teko', sans-serif; line-height: 1; }
-.stat-mini-box { background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; padding: 8px; text-align: center; }
-.stat-mini-box span { display: block; font-size: 10px; color: #9da9b8; font-weight: 700; }
-.stat-mini-box strong { font-size: 16px; color: var(--gold); }
+
+.site-footer {
+    background: rgba(3, 7, 16, 0.95); border-top: 1px solid var(--glass-border);
+    padding: 20px 25px; margin-top: auto; display: flex; justify-content: space-between;
+    align-items: center; flex-wrap: wrap; gap: 15px; backdrop-filter: blur(10px);
+}
+.footer-brand { display: flex; align-items: center; gap: 10px; font-family: 'Teko', sans-serif; font-size: 20px; color: var(--gold); letter-spacing: 1px; }
+.footer-brand img { width: 28px; height: 28px; object-fit: contain; border-radius: 4px; }
+.footer-links { display: flex; gap: 15px; align-items: center; flex-wrap: wrap; }
+.social-badge {
+    background: rgba(255,255,255,0.04); border: 1px solid var(--glass-border); color: #b0c4de;
+    padding: 6px 14px; border-radius: 8px; font-size: 13px; font-weight: 700; text-decoration: none;
+    display: inline-flex; align-items: center; gap: 6px; transition: 0.3s;
+}
+.social-badge:hover { border-color: var(--cyan); color: white; background: rgba(0,229,255,0.1); transform: translateY(-2px); }
+.social-badge.discord:hover { border-color: #5865F2; background: rgba(88,101,242,0.15); }
+.social-badge.insta:hover { border-color: #E1306C; background: rgba(225,48,108,0.15); }
+.social-badge.youtube:hover { border-color: #FF0000; background: rgba(255,0,0,0.15); }
+.footer-copy { font-size: 12px; color: #7a8a9e; font-weight: 600; text-align: center; width: 100%; border-top: 1px solid rgba(255,255,255,0.03); padding-top: 10px; margin-top: 5px; }
+@media(min-width: 768px) { .footer-copy { width: auto; border-top: none; padding-top: 0; margin-top: 0; } }
 </style>
 </head>
 <body>
@@ -392,77 +439,78 @@ input:focus, select:focus, textarea:focus { border-color: var(--cyan); box-shado
     </div>
     
     <a href="#" class="sidebar-link" style="color:#00ff66; border-color:rgba(0,255,102,0.3);" onclick="toggleMenu(); openThemeManagerModal();">
-        <span style="font-size:18px;">🎨</span> Match Graphics / Theme Mgr
+        <span style="font-size:18px;">🎨</span> Match & Admin Themes
     </a>
     <a href="#" class="sidebar-link" style="color:var(--gold);" onclick="toggleMenu(); openFinalResultModal();">
         <span style="font-size:18px;">🏆</span> Final Tournament Result
     </a>
-    <a href="#" class="sidebar-link" style="color:var(--cyan);" onclick="toggleMenu(); openAnalyticsModal();">
-        <span style="font-size:18px;">📊</span> Advanced Analytics & Summary
-    </a>
-    <a href="#" class="sidebar-link" onclick="toggleMenu(); openCompareModal();">
-        <span style="font-size:18px;">⚖️</span> Match Comparison
-    </a>
     <a href="#" class="sidebar-link" onclick="toggleMenu(); openHistoryModal();">
-        <span style="font-size:18px;">📚</span> Match Archive
+        <span style="font-size:18px;">📚</span> Match Archive (Saved Matches)
     </a>
     <a href="#" class="sidebar-link danger-link" style="margin-top:auto;" onclick="toggleMenu(); clearMatchHistory();">
         <span style="font-size:18px;">🗑️</span> Clear Entire History
     </a>
 </div>
 
-<!-- Theme Manager Modal -->
+<!-- Theme Manager Modal (OBS Overlays + Admin Panel) -->
 <div class="modal" id="themeManagerModal">
     <div class="modal-content">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px; border-bottom:1px solid rgba(255,255,255,0.1); padding-bottom:12px;">
-            <h2 style="margin:0; font-family:'Teko'; color:var(--gold); font-size:28px;">🎨 MATCH GRAPHICS THEME</h2>
+            <h2 style="margin:0; font-family:'Teko'; color:var(--gold); font-size:28px;">🎨 GRAPHICS & ADMIN THEMES</h2>
             <button class="btn btn-danger" style="padding:4px 10px; font-size:12px;" onclick="closeModal('themeManagerModal')">✕ CLOSE</button>
         </div>
 
-        <div style="margin-bottom:15px;">
-            <label style="font-size:12px; color:var(--gold); font-weight:800;">SELECT MATCH</label>
-            <select id="tmMatchSelect" onchange="onTmMatchChange()" style="margin-top:5px; border-color:var(--gold);"></select>
+        <div style="background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08); border-radius:8px; padding:14px; margin-bottom:18px;">
+            <h3 style="margin:0 0 10px 0; font-family:'Teko'; font-size:20px; color:var(--gold);">🖥️ ADMIN PANEL THEME (LIVE LOOK)</h3>
+            <label style="font-size:12px; color:#b0c4de; font-weight:700;">CHOOSE ADMIN PANEL PALETTE</label>
+            <div style="display:flex; gap:10px; margin-top:6px;">
+                <select id="adminThemeSelect" style="flex:1; border-color:var(--gold);"></select>
+                <button class="btn btn-gold" style="padding:8px 16px;" onclick="saveAdminTheme()">APPLY ADMIN THEME</button>
+            </div>
         </div>
 
-        <div style="margin-bottom:20px;">
-            <label style="font-size:12px; color:var(--cyan); font-weight:800;">CHOOSE PYARA & SEXY COLOR PRESET</label>
-            <select id="tmPresetSelect" onchange="onTmPresetChange()" style="margin-top:5px; border-color:var(--cyan);">
-                <option value="Classic Gold">Classic Gold (Golden Glow)</option>
-                <option value="Royal Blue">Royal Blue (Deep Ocean)</option>
-                <option value="Crimson Red">Crimson Red (Aggressive Fire)</option>
-                <option value="Cyber Purple">Cyber Purple (Neon Synthwave)</option>
-                <option value="Neon Cyber">Neon Cyber (Cyan & Magenta)</option>
-                <option value="Sunset Orange">Sunset Orange (Warm Gradient)</option>
-                <option value="Emerald Neon">Emerald Neon (Pro League Green)</option>
-                <option value="Rose Gold">Rose Gold (Pyaara Pink Theme)</option>
-            </select>
-        </div>
+        <div style="background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08); border-radius:8px; padding:14px;">
+            <h3 style="margin:0 0 10px 0; font-family:'Teko'; font-size:20px; color:var(--cyan);">📡 OBS OVERLAYS MATCH THEME</h3>
+            <div style="margin-bottom:12px;">
+                <label style="font-size:12px; color:var(--gold); font-weight:800;">SELECT OVERLAY MATCH</label>
+                <select id="tmMatchSelect" onchange="onTmMatchChange()" style="margin-top:5px; border-color:var(--gold);"></select>
+            </div>
 
-        <button class="btn btn-gold" style="width:100%;" onclick="saveMatchTheme()">💾 SAVE THEME FOR THIS MATCH</button>
+            <div style="margin-bottom:15px;">
+                <label style="font-size:12px; color:var(--cyan); font-weight:800;">OVERLAY COLOR PRESET</label>
+                <select id="tmPresetSelect" style="margin-top:5px; border-color:var(--cyan);"></select>
+            </div>
+
+            <button class="btn btn-primary" style="width:100%;" onclick="saveMatchTheme()">💾 SAVE THEME FOR OVERLAY</button>
+        </div>
     </div>
 </div>
 
 <!-- Final Result Modal -->
 <div class="modal" id="finalResultModal"><div class="modal-content"><div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px; border-bottom:1px solid rgba(255,255,255,0.1); padding-bottom:12px;"><h2 style="margin:0; font-family:'Teko'; color:var(--gold); font-size:30px;">🏆 FINAL TOURNAMENT RESULT</h2><button class="btn btn-danger" style="padding:6px 12px; font-size:12px;" onclick="closeModal('finalResultModal')">CLOSE</button></div><div id="podiumContainer" class="podium"></div><div id="finalListContainer"></div></div></div>
 
-<!-- History Archive Modal -->
-<div class="modal" id="historyModal"><div class="modal-content"><div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px; border-bottom:1px solid rgba(255,255,255,0.1); padding-bottom:12px;"><h2 style="margin:0; font-family:'Teko'; color:var(--gold); font-size:30px;">MATCH ARCHIVE</h2><button class="btn btn-danger" style="padding:6px 12px; font-size:12px;" onclick="closeModal('historyModal')">CLOSE</button></div><div id="historyListContainer">Loading...</div></div></div>
-
-<!-- Match Comparison Modal -->
-<div class="modal" id="compareModal"><div class="modal-content"><div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px; border-bottom:1px solid rgba(255,255,255,0.1); padding-bottom:12px;"><h2 style="margin:0; font-family:'Teko'; color:var(--cyan); font-size:30px;">⚖️ MATCH COMPARISON</h2><button class="btn btn-danger" style="padding:6px 12px; font-size:12px;" onclick="closeModal('compareModal')">CLOSE</button></div><div style="display:flex; gap:10px; margin-bottom:15px;"><select id="compMatch1" onchange="runComparison()"><option value="">Match 1</option></select><select id="compMatch2" onchange="runComparison()"><option value="">Match 2</option></select></div><div id="compareResultContainer">Select two matches to compare.</div></div></div>
-
-<!-- Analytics Modal -->
-<div class="modal" id="analyticsModal"><div class="modal-content" style="max-width:750px;"><div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px; border-bottom:1px solid rgba(255,255,255,0.1); padding-bottom:12px;"><h2 style="margin:0; font-family:'Teko'; color:var(--cyan); font-size:30px;">📊 ADVANCED ANALYTICS</h2><button class="btn btn-danger" style="padding:6px 12px; font-size:12px;" onclick="closeModal('analyticsModal')">CLOSE</button></div><select id="analyticsTeamSelect" onchange="renderAnalyticsView()"><option value="ALL">Overall Top 15 Teams</option></select><div id="teamSummaryStats" class="stat-mini-grid" style="display:none; grid-template-columns:repeat(4,1fr); gap:8px; margin-top:12px;"></div><div class="chart-container"><canvas id="pointsChart"></canvas></div></div></div>
+<!-- History Archive Modal (Full Match Data Viewer) -->
+<div class="modal" id="historyModal">
+    <div class="modal-content" style="max-width:750px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px; border-bottom:1px solid rgba(255,255,255,0.1); padding-bottom:12px;">
+            <h2 style="margin:0; font-family:'Teko'; color:var(--gold); font-size:30px;">📚 MATCH ARCHIVE (SAVED MATCHES)</h2>
+            <button class="btn btn-danger" style="padding:6px 12px; font-size:12px;" onclick="closeModal('historyModal')">CLOSE</button>
+        </div>
+        <div id="historyListContainer">Loading...</div>
+    </div>
+</div>
 
 <div class="sticky-header">
     <div class="brand-container">
         <button class="menu-dots-btn" onclick="toggleMenu()">⋮</button>
-        <div class="brand"><h1>ENI PRO</h1><span>LIVE BROADCAST</span></div>
+        <img src="/static/logos/server_logo.webp" class="server-logo" alt="Logo">
+        <div class="brand"><h1>ESPORTS NATION INDIA</h1><span>ADMIN BROADCAST DASHBOARD</span></div>
         <div id="syncIndicator" class="sync-status sync-live"><div class="sync-dot"></div><span id="syncText">ONLINE</span></div>
         <div class="sync-status" style="color:var(--gold); border-color:rgba(242,196,0,0.3);"><span>USERS: <strong id="connectedUsersCount">1</strong></span></div>
     </div>
     
     <div class="live-stats">
+        <button class="btn-top-reset" onclick="uiResetAll()" title="Reset all data to 0 and start completely fresh">⚠️ RESET ALL</button>
         <div class="history-controls">
             <button class="btn-undo-redo" onclick="uiUndo()" title="Undo">↩️</button>
             <button class="btn-undo-redo" onclick="uiRedo()" title="Redo">↪️</button>
@@ -487,7 +535,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--cyan); box-shado
     <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(300px,1fr)); gap:15px; margin-bottom:15px;">
         <div class="glass-card" style="margin:0;">
             <div style="display:flex; gap:10px; margin-bottom:10px;">
-                <div style="flex:1"><label style="font-size:11px; color:var(--gold); font-weight:700;">TOURNAMENT</label><input id="tourneyName" type="text" value="ENI ESPORTS"></div>
+                <div style="flex:1"><label style="font-size:11px; color:var(--gold); font-weight:700;">TOURNAMENT</label><input id="tourneyName" type="text" value="ESPORTS NATION INDIA"></div>
                 <div style="width:90px"><label style="font-size:11px; color:var(--gold); font-weight:700;">MATCH</label><input id="matchName" type="text" value="MATCH 1"></div>
                 <div style="width:80px"><label style="font-size:11px; color:var(--gold); font-weight:700;">TOTAL M.</label><input id="totalMatchesInput" type="number" value="10" min="1"></div>
             </div>
@@ -523,10 +571,23 @@ input:focus, select:focus, textarea:focus { border-color: var(--cyan); box-shado
     <div id="teamsContainer" class="teams-grid"></div>
 </div>
 
+<footer class="site-footer">
+    <div class="footer-brand">
+        <img src="/static/logos/server_logo.webp" alt="Logo">
+        <span>ESPORTS NATION INDIA</span>
+    </div>
+    <div class="footer-links">
+        <a href="https://discord.gg/esportsindia" target="_blank" class="social-badge discord">🎮 Discord Server</a>
+        <a href="https://www.instagram.com/esportsnation.india?igsh=ZG1zc3dhOGphN3h2" target="_blank" class="social-badge insta">📷 Instagram</a>
+        <a href="https://youtube.com/@esportnationindia?si=LcxdyjbGXS5NaWLy" target="_blank" class="social-badge youtube">▶️ YouTube Channel</a>
+    </div>
+    <div class="footer-copy">© 2026 Esports Nation India. All Rights Reserved.</div>
+</footer>
+
 <div id="toast" class="toast">Action Successful</div>
 
 <script>
-let teamsData = []; let historyData = []; let isCompactMode = false; let analyticsChartInstance = null; let wasOffline = false;
+let teamsData = []; let historyData = []; let isCompactMode = false; let wasOffline = false;
 const clientSessionId = "prod_" + Math.random().toString(36).substring(2, 10);
 
 async function checkServerStatus() {
@@ -551,17 +612,41 @@ async function syncAdminData() {
         const res = await fetch("/api/teams?t=" + new Date().getTime());
         if (!res.ok) return;
         teamsData = await res.json();
-        let at = 0, ap = 0;
+        
+        const activeTeams = teamsData.filter(t => !t.absent);
+        const aliveTeams = activeTeams.filter(t => t.players.some(p => p === 1));
+        
+        let at = aliveTeams.length;
+        let ap = 0;
+
+        // Auto #1 trigger when only 1 team is left
+        if(activeTeams.length > 1 && at === 1) {
+            const winner = aliveTeams[0];
+            if(winner.position !== 1) {
+                await fetch("/api/update", {
+                    method: "POST",
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({id: winner.id, position: 1})
+                });
+                winner.position = 1;
+            }
+        }
+
         teamsData.forEach(team => {
             if(!team.absent) {
                 let alive = team.players.filter(p=>p===1).length;
-                if(alive > 0) at++; ap += alive;
+                ap += alive;
             }
             const card = document.getElementById(`card-${team.id}`);
             if(card) {
                 document.getElementById(`kills-${team.id}`).innerText = team.kills;
                 document.getElementById(`pts-${team.id}`).innerText = team.points;
                 document.getElementById(`ov-${team.id}`).innerText = team.overall_pts || 0;
+                
+                const posSel = document.getElementById(`pos-sel-${team.id}`);
+                if(posSel && String(posSel.value) !== String(team.position)) {
+                    posSel.value = team.position;
+                }
                 
                 team.players.forEach((val, idx) => {
                     const pNode = document.getElementById(`pbtn-${team.id}-${idx}`);
@@ -574,6 +659,24 @@ async function syncAdminData() {
                 const isDead = (team.players.filter(p=>p===1).length === 0);
                 if(isDead && team.position > 0) card.classList.add("eliminated");
                 else card.classList.remove("eliminated");
+
+                // Highlight WWCD winner box in Gold when exactly 1 team remains OR position == 1
+                const isWinner = (!team.absent && ((activeTeams.length > 1 && at === 1 && aliveTeams[0].id === team.id) || team.position === 1));
+                if(isWinner) {
+                    card.classList.add("winner");
+                    let badge = document.getElementById(`wwcd-badge-${team.id}`);
+                    if(!badge) {
+                        const tag = document.createElement("span");
+                        tag.id = `wwcd-badge-${team.id}`;
+                        tag.style.cssText = "background:var(--gold); color:#000; font-weight:800; font-size:11px; padding:2px 8px; border-radius:4px; margin-left:6px;";
+                        tag.innerText = "👑 WWCD #1";
+                        card.querySelector(".tc-header").appendChild(tag);
+                    }
+                } else {
+                    card.classList.remove("winner");
+                    const badge = document.getElementById(`wwcd-badge-${team.id}`);
+                    if(badge) badge.remove();
+                }
             }
         });
         document.getElementById("topTeams").innerText = at;
@@ -593,17 +696,51 @@ function toggleCompactMode() {
     else { c.classList.remove("compact-mode"); b.innerText = "📋 COMPACT VIEW"; b.style.background = "transparent"; b.style.color = "var(--cyan)"; }
 }
 
-let allThemesData = { matches: {} };
+let allThemesData = { matches: {}, admin_theme: "Classic Gold" };
 let builtinPresetsData = {};
+
+function applyAdminThemeLocally(themeName) {
+    const t = builtinPresetsData[themeName] || builtinPresetsData["Classic Gold"];
+    if(!t) return;
+    const styleEl = document.getElementById("adminDynamicTheme");
+    if(styleEl) {
+        document.documentElement.style.setProperty('--gold', t.primary);
+        document.documentElement.style.setProperty('--cyan', t.secondary);
+        document.documentElement.style.setProperty('--bg-main', t.bg_primary);
+        document.documentElement.style.setProperty('--card-bg', `rgba(13, 22, 38, 0.9)`);
+        document.body.style.background = `radial-gradient(circle at top, ${t.bg_secondary} 0%, ${t.bg_primary} 100%)`;
+    }
+}
+
+async function loadThemeSettings() {
+    try {
+        const res = await fetch("/api/themes");
+        const d = await res.json();
+        allThemesData = d.themes || { matches: {}, admin_theme: "Classic Gold" };
+        builtinPresetsData = d.presets || {};
+        
+        const currentAdminTh = allThemesData.admin_theme || "Classic Gold";
+        applyAdminThemeLocally(currentAdminTh);
+    } catch(e){}
+}
 
 async function openThemeManagerModal() {
     document.getElementById("themeManagerModal").classList.add("show");
     const [cfgRes, thmRes] = await Promise.all([fetch("/api/config"), fetch("/api/themes")]);
     const cfg = await cfgRes.json();
     const thmJson = await thmRes.json();
-    allThemesData = thmJson.themes || { matches: {} };
+    allThemesData = thmJson.themes || { matches: {}, admin_theme: "Classic Gold" };
     builtinPresetsData = thmJson.presets || {};
 
+    // Fill Admin theme presets
+    const admSel = document.getElementById("adminThemeSelect");
+    admSel.innerHTML = "";
+    Object.keys(builtinPresetsData).forEach(p => {
+        const sel = (allThemesData.admin_theme === p) ? "selected" : "";
+        admSel.innerHTML += `<option value="${p}" ${sel}>${p}</option>`;
+    });
+
+    // Fill OBS Match select
     const totalM = parseInt(cfg.total_matches) || 10;
     const matchSel = document.getElementById("tmMatchSelect");
     matchSel.innerHTML = "";
@@ -612,6 +749,14 @@ async function openThemeManagerModal() {
         const sel = (cfg.match && cfg.match.toUpperCase() === mName) ? "selected" : "";
         matchSel.innerHTML += `<option value="${mName}" ${sel}>${mName}</option>`;
     }
+
+    // Fill OBS Presets
+    const preSel = document.getElementById("tmPresetSelect");
+    preSel.innerHTML = "";
+    Object.keys(builtinPresetsData).forEach(p => {
+        preSel.innerHTML += `<option value="${p}">${p}</option>`;
+    });
+
     onTmMatchChange();
 }
 
@@ -621,7 +766,18 @@ function onTmMatchChange() {
     document.getElementById("tmPresetSelect").value = t.preset || "Classic Gold";
 }
 
-function onTmPresetChange() {}
+async function saveAdminTheme() {
+    const chosen = document.getElementById("adminThemeSelect").value;
+    allThemesData.admin_theme = chosen;
+    await fetch("/api/themes", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ admin_theme: chosen })
+    });
+    applyAdminThemeLocally(chosen);
+    showToast(`Admin Theme Applied: ${chosen}! ✨`);
+    closeModal('themeManagerModal');
+}
 
 async function saveMatchTheme() {
     const mKey = document.getElementById("tmMatchSelect").value;
@@ -630,7 +786,7 @@ async function saveMatchTheme() {
     if(!allThemesData.matches) allThemesData.matches = {};
     allThemesData.matches[mKey] = themeObj;
     await fetch("/api/themes", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ match_key: mKey, theme: themeObj }) });
-    showToast(`Theme Saved for ${mKey}! 🎨`);
+    showToast(`Overlay Theme Saved for ${mKey}! 🎨`);
     closeModal('themeManagerModal');
 }
 
@@ -650,70 +806,51 @@ async function openFinalResultModal() {
     document.getElementById("finalListContainer").innerHTML = tbl + `</table>`;
 }
 
-async function openAnalyticsModal() {
-    document.getElementById("analyticsModal").classList.add("show");
-    const [tRes, hRes] = await Promise.all([fetch("/api/teams"), fetch("/api/history")]);
-    teamsData = await tRes.json(); historyData = await hRes.json();
-    const sel = document.getElementById("analyticsTeamSelect");
-    sel.innerHTML = `<option value="ALL">Overall Top 15 Teams</option>`;
-    teamsData.filter(t=>!t.absent).forEach(t => sel.innerHTML += `<option value="${t.id}">${t.name}</option>`);
-    renderAnalyticsView();
-}
-
-function renderAnalyticsView() {
-    const val = document.getElementById("analyticsTeamSelect").value;
-    const statsBox = document.getElementById("teamSummaryStats");
-    const ctx = document.getElementById('pointsChart').getContext('2d');
-    if(analyticsChartInstance) analyticsChartInstance.destroy();
-    if(val === "ALL") {
-        statsBox.style.display = "none";
-        const vt = teamsData.filter(t=>!t.absent).sort((a,b)=>(b.overall_pts||0)-(a.overall_pts||0)).slice(0,15);
-        analyticsChartInstance = new Chart(ctx, { type: 'bar', data: { labels: vt.map(t=>t.name), datasets: [{ label: 'Total Points', data: vt.map(t=>t.overall_pts||0), backgroundColor: '#00e5ff' }] }, options: { responsive:true, maintainAspectRatio:false } });
-    } else {
-        statsBox.style.display = "grid";
-        const t = teamsData.find(x => String(x.id) === String(val));
-        if(!t) return;
-        statsBox.innerHTML = `<div class="stat-mini-box"><span>MATCHES</span><strong>${t.matches_played||0}</strong></div><div class="stat-mini-box"><span>KILLS</span><strong style="color:var(--green)">${t.overall_kills||0}</strong></div><div class="stat-mini-box"><span>POINTS</span><strong style="color:var(--cyan)">${t.overall_pts||0}</strong></div><div class="stat-mini-box"><span>WWCD</span><strong style="color:var(--gold)">${t.wwcd||0}</strong></div>`;
-        let labels=[], ranks=[];
-        historyData.forEach((m, idx) => {
-            labels.push(`M${idx+1}`);
-            let st = [...m.teams].sort((a,b)=>b.total_pts-a.total_pts);
-            let r = st.findIndex(x=>x.id===t.id)+1;
-            ranks.push(r>0?r:null);
-        });
-        analyticsChartInstance = new Chart(ctx, { type: 'line', data: { labels, datasets: [{ label: 'Match Rank', data: ranks, borderColor: '#f2c400', backgroundColor:'rgba(242,196,0,0.2)', fill:true }] }, options: { responsive:true, maintainAspectRatio:false, scales: { y: { reverse:true, min:1 } } } });
-    }
-}
-
-async function openCompareModal() {
-    document.getElementById("compareModal").classList.add("show");
-    const res = await fetch("/api/history"); historyData = await res.json();
-    let opts = `<option value="">Select Match</option>`;
-    historyData.forEach(m => opts += `<option value="${m.match_num}">MATCH ${m.match_num}</option>`);
-    document.getElementById("compMatch1").innerHTML = opts; document.getElementById("compMatch2").innerHTML = opts;
-}
-
-function runComparison() {
-    const m1v = document.getElementById("compMatch1").value, m2v = document.getElementById("compMatch2").value;
-    if(!m1v || !m2v) return;
-    const m1 = historyData.find(x=>String(x.match_num)===String(m1v)), m2 = historyData.find(x=>String(x.match_num)===String(m2v));
-    let html = `<table style="width:100%; border-collapse:collapse; font-size:13px;"><tr style="color:var(--cyan); border-bottom:1px solid rgba(255,255,255,0.1);"><th>Team</th><th>M${m1v}</th><th>M${m2v}</th><th>Diff</th></tr>`;
-    teamsData.filter(t=>!t.absent).forEach(t => {
-        let t1 = m1.teams.find(x=>x.id===t.id)||{total_pts:0}, t2 = m2.teams.find(x=>x.id===t.id)||{total_pts:0};
-        let diff = (t2.total_pts||0) - (t1.total_pts||0);
-        html += `<tr style="border-bottom:1px solid rgba(255,255,255,0.04);"><td style="padding:6px; font-weight:800;">${t.name}</td><td align="center">${t1.total_pts}P</td><td align="center">${t2.total_pts}P</td><td align="center" style="font-weight:800; color:${diff>0?'var(--green)':'var(--red)'}">${diff>0?'+'+diff:diff}</td></tr>`;
-    });
-    document.getElementById("compareResultContainer").innerHTML = html + `</table>`;
-}
-
 async function openHistoryModal() {
     document.getElementById("historyModal").classList.add("show");
     const res = await fetch("/api/history"); historyData = await res.json();
     const c = document.getElementById("historyListContainer");
-    if(historyData.length === 0) { c.innerHTML = "<p>No matches saved.</p>"; return; }
+    if(!historyData || historyData.length === 0) { 
+        c.innerHTML = "<p style='color:#9da9b8; text-align:center;'>No saved match records yet.</p>"; 
+        return; 
+    }
+    
     let html = "";
-    historyData.slice().reverse().forEach(m => {
-        html += `<div style="background:rgba(255,255,255,0.03); padding:10px; border-radius:8px; margin-bottom:10px;"><h4 style="margin:0; color:var(--gold);">${m.match_name} (${m.map})</h4></div>`;
+    historyData.slice().reverse().forEach((m, idx) => {
+        let teamsList = m.teams || [];
+        teamsList.sort((a,b) => (b.total_pts || 0) - (a.total_pts || 0));
+
+        let rowsHtml = "";
+        teamsList.forEach((tm, rIdx) => {
+            rowsHtml += `
+                <tr style="border-bottom:1px solid rgba(255,255,255,0.05); font-size:13px;">
+                    <td style="padding:6px 8px; color:var(--gold);">#${tm.position > 0 ? tm.position : (rIdx+1)}</td>
+                    <td style="font-weight:700;">${tm.name}</td>
+                    <td align="center" style="color:var(--green);">${tm.kills || 0}</td>
+                    <td align="center" style="color:var(--cyan);">${tm.placement_points || 0}</td>
+                    <td align="center" style="color:var(--gold); font-weight:800;">${tm.total_pts || 0}</td>
+                </tr>
+            `;
+        });
+
+        html += `
+            <div style="background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08); padding:15px; border-radius:10px; margin-bottom:15px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; border-bottom:1px solid rgba(255,255,255,0.1); padding-bottom:8px;">
+                    <h3 style="margin:0; color:var(--gold); font-family:'Teko'; font-size:24px;">${m.match_name} <span style="font-size:16px; color:#fff;">(${m.map})</span></h3>
+                    <span style="font-size:12px; color:#9da9b8;">Saved: ${m.timestamp || 'Completed'}</span>
+                </div>
+                <table style="width:100%; border-collapse:collapse;">
+                    <tr style="color:#9da9b8; font-size:12px; text-transform:uppercase; border-bottom:1px solid rgba(255,255,255,0.1);">
+                        <th align="left" style="padding:4px 8px;">Rank</th>
+                        <th align="left">Team</th>
+                        <th>Kills</th>
+                        <th>Place Pts</th>
+                        <th>Total</th>
+                    </tr>
+                    ${rowsHtml}
+                </table>
+            </div>
+        `;
     });
     c.innerHTML = html;
 }
@@ -721,6 +858,13 @@ async function openHistoryModal() {
 async function clearMatchHistory() { if(!confirm("Wipe history?")) return; await fetch("/api/clear_history", { method: "POST" }); showToast("Wiped!"); loadTeams(); closeModal('historyModal'); }
 async function uiUndo() { await fetch("/api/undo", { method: "POST" }); loadTeams(); }
 async function uiRedo() { await fetch("/api/redo", { method: "POST" }); loadTeams(); }
+
+async function uiResetAll() {
+    if(!confirm("⚠️ Are you sure you want to RESET ALL? This will set all scores to 0, clear match history, and reset progression to 0%.")) return;
+    await fetch("/api/reset_all", { method: "POST" });
+    showToast("Everything Reset to 0! 🔄");
+    loadTeams();
+}
 
 function uiSetPlayerCount(id, count) { fetch("/api/update", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({id, player_count: count}) }).then(loadTeams); }
 function uiChangeKills(id, amt) { fetch("/api/update", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({id, kills_change: amt}) }).then(syncAdminData); }
@@ -737,21 +881,26 @@ async function adjustSlots(amount) {
 }
 
 async function saveMatchOverall() {
-    if(!confirm("Save match to history?")) return;
+    if(!confirm("Save match and full score data to history?")) return;
     const res = await fetch("/api/save_match_overall", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({}) });
     const data = await res.json();
-    if(res.ok) { showToast("Saved! 💾"); document.getElementById("matchName").value = data.next_match; loadTeams(); }
+    if(res.ok) { 
+        showToast("Full Match Data Saved! 💾"); 
+        document.getElementById("matchName").value = data.next_match; 
+        loadTeams(); 
+    }
     else if(data.error) showToast(data.error);
 }
 
 async function loadConfigData() {
     const [cfgRes, hRes] = await Promise.all([fetch("/api/config"), fetch("/api/history")]);
     const cfg = await cfgRes.json(); const hist = await hRes.json();
-    document.getElementById("tourneyName").value = cfg.tournament || "ENI";
+    document.getElementById("tourneyName").value = cfg.tournament || "ESPORTS NATION INDIA";
     document.getElementById("matchName").value = cfg.match || "MATCH 1";
     document.getElementById("mapName").value = cfg.map || "ERANGEL";
     if(cfg.total_matches) document.getElementById("totalMatchesInput").value = cfg.total_matches;
-    const completed = hist.length; const tot = cfg.total_matches || 10;
+    const completed = Array.isArray(hist) ? hist.length : 0; 
+    const tot = cfg.total_matches || 10;
     document.getElementById("topProgress").innerText = `${completed}/${tot} (${Math.round((completed/tot)*100)}%)`;
 }
 
@@ -770,15 +919,21 @@ function renderAllTeams() {
         const isDead = team.players.filter(p => p === 1).length === 0;
         let pHTML = "";
         team.players.forEach((a, idx) => { pHTML += `<div id="pbtn-${team.id}-${idx}" class="player-node ${a ? '' : 'dead'}" onclick="uiTogglePlayer(${team.id}, ${idx})">P${idx+1}</div>`; });
+        
         let posOpts = `<option value="0" ${team.position==0?'selected':''}>POS 0 (Alive)</option>`;
-        for(let i = totalTeams; i >= 1; i--) posOpts += `<option value="${i}" ${team.position==i?'selected':''}>RANK #${i}</option>`;
+        for(let i = 1; i <= totalTeams; i++) {
+            let label = `RANK #${i}`;
+            if(i === 1) label = `RANK #1 (WWCD 👑)`;
+            else if(team.position === i && isDead) label = `RANK #${i} (Eliminated 💀)`;
+            posOpts += `<option value="${i}" ${team.position==i?'selected':''}>${label}</option>`;
+        }
 
         let logoImg = team.logo ? `<img src="${team.logo}">` : `<span>No Logo</span>`;
         let absentBtnClass = isAbsent ? "btn-not-present" : "btn-not-present is-present";
         let absentBtnText = isAbsent ? "❌ ABSENT" : "✅ PRESENT";
 
         html += `
-            <div id="card-${team.id}" class="team-card searchable ${isAbsent ? 'not-present' : ''} ${isDead ? 'eliminated' : ''}" data-name="${team.name.toLowerCase()}">
+            <div id="card-${team.id}" class="team-card searchable ${isAbsent ? 'not-present' : ''} ${isDead ? 'eliminated' : ''} ${team.position === 1 ? 'winner' : ''}" data-name="${team.name.toLowerCase()}">
                 <div class="tc-header">
                     <span class="tc-slot">#${team.id}</span>
                     <input class="tc-name" value="${team.name}" onblur="uiUpdateName(${team.id}, this.value)" ${isAbsent ? 'disabled' : ''}>
@@ -832,6 +987,7 @@ async function uploadLogo(id, fileInput) {
     }
 }
 
+loadThemeSettings();
 loadTeams();
 </script>
 </body>
@@ -927,20 +1083,20 @@ setInterval(check,1000);
 </script>
 """ + THEME_ENGINE_JS + "</body></html>"
 
-MATCH_HTML = r"""<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@700;800&family=Teko:wght@600;700&display=swap');*{box-sizing:border-box;}html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:transparent;font-family:'Rajdhani',sans-serif;}#match-info{position:fixed;bottom:18px;left:18px;min-width:240px;background:linear-gradient(135deg, rgb(6,20,39), rgb(12,34,62));border:1px solid rgba(242,196,0,0.4);border-left:4px solid #f2c400;border-radius:8px;padding:8px 14px;color:white;box-shadow:0 8px 25px rgba(0,0,0,0.65);animation:slideMatch 0.8s ease;}.mi-tourney{font-size:10px;font-weight:800;color:#00e5ff;letter-spacing:1.5px;}.mi-row{display:flex;align-items:baseline;gap:10px;margin-top:2px;}.mi-match{font-family:'Teko',sans-serif;font-size:24px;font-weight:700;color:#f2c400;}.mi-map{font-family:'Teko',sans-serif;font-size:24px;font-weight:700;color:white;}</style></head><body><div id="match-info"><div class="mi-tourney" id="dt">ENI ESPORTS</div><div class="mi-row"><div class="mi-match" id="dm">MATCH 1</div><div>|</div><div class="mi-map" id="dmap">ERANGEL</div></div></div>
+MATCH_HTML = r"""<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@700;800&family=Teko:wght@600;700&display=swap');*{box-sizing:border-box;}html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:transparent;font-family:'Rajdhani',sans-serif;}#match-info{position:fixed;bottom:18px;left:18px;min-width:240px;background:linear-gradient(135deg, rgb(6,20,39), rgb(12,34,62));border:1px solid rgba(242,196,0,0.4);border-left:4px solid #f2c400;border-radius:8px;padding:8px 14px;color:white;box-shadow:0 8px 25px rgba(0,0,0,0.65);animation:slideMatch 0.8s ease;}.mi-tourney{font-size:10px;font-weight:800;color:#00e5ff;letter-spacing:1.5px;}.mi-row{display:flex;align-items:baseline;gap:10px;margin-top:2px;}.mi-match{font-family:'Teko',sans-serif;font-size:24px;font-weight:700;color:#f2c400;}.mi-map{font-family:'Teko',sans-serif;font-size:24px;font-weight:700;color:white;}</style></head><body><div id="match-info"><div class="mi-tourney" id="dt">ESPORTS NATION INDIA</div><div class="mi-row"><div class="mi-match" id="dm">MATCH 1</div><div>|</div><div class="mi-map" id="dmap">ERANGEL</div></div></div>
 <script>
-async function c(){try{const res=await fetch("/api/config");const cfg=await res.json();document.getElementById("dt").innerText=cfg.tournament||"ENI ESPORTS";document.getElementById("dm").innerText=cfg.match||"MATCH 1";document.getElementById("dmap").innerText=cfg.map||"ERANGEL";}catch(e){}}
+async function c(){try{const res=await fetch("/api/config");const cfg=await res.json();document.getElementById("dt").innerText=cfg.tournament||"ESPORTS NATION INDIA";document.getElementById("dm").innerText=cfg.match||"MATCH 1";document.getElementById("dmap").innerText=cfg.map||"ERANGEL";}catch(e){}}
 c();setInterval(c,2000);
 </script>
 """ + THEME_ENGINE_JS + "</body></html>"
 
-STANDINGS_HTML = r"""<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@600;700;800&family=Teko:wght@600;700&display=swap');*{box-sizing:border-box;}html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:radial-gradient(circle at center, rgb(10,28,54) 0%, rgb(3,8,17) 100%);font-family:'Rajdhani',sans-serif;color:white;}.board-wrapper{max-width:1320px;margin:35px auto;padding:0 25px;animation:fadeInBoard 0.8s ease;}@keyframes fadeInBoard{from{opacity:0;}to{opacity:1;}}.board-header{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:3px solid #f2c400;padding-bottom:10px;margin-bottom:22px;}.bh-title{font-family:'Teko',sans-serif;font-size:48px;color:#f2c400;letter-spacing:2px;text-transform:uppercase;}.bh-sub{font-size:16px;font-weight:800;color:#00e5ff;letter-spacing:3px;}.standings-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px 28px;}.st-table{width:100%;border-collapse:separate;border-spacing:0 6px;}.st-head{background:#f2c400;color:#040811;font-weight:800;font-size:13px;}.st-head th{padding:7px 10px;text-align:center;}.st-head th:nth-child(2){text-align:left;}.st-row{background:rgb(9,28,54);}.st-row.top1{background:rgb(36,31,10);outline:1px solid #f2c400;}.st-row td{padding:8px 10px;text-align:center;font-weight:800;font-size:16px;}.st-row td:first-child{color:#f2c400;width:68px;}.st-team{display:flex;align-items:center;gap:10px;text-align:left;}.st-logo{width:26px;height:26px;object-fit:contain;border-radius:4px;}.st-pts{color:#f2c400;font-size:18px;background:rgba(242,196,0,0.12);}</style></head><body><div class="board-wrapper"><div class="board-header"><div><div class="bh-sub" id="stTourney">ENI ESPORTS</div><div class="bh-title">OVERALL STANDINGS</div></div><div class="bh-title" style="font-size:34px;">LEADERBOARD</div></div><div class="standings-grid"><table class="st-table"><thead><tr class="st-head"><th>#</th><th>TEAM</th><th>M</th><th>WWCD</th><th>KILLS</th><th>PLACE</th><th>TOTAL</th></tr></thead><tbody id="colLeft"></tbody></table><table class="st-table"><thead><tr class="st-head"><th>#</th><th>TEAM</th><th>M</th><th>WWCD</th><th>KILLS</th><th>PLACE</th><th>TOTAL</th></tr></thead><tbody id="colRight"></tbody></table></div></div>
+STANDINGS_HTML = r"""<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@600;700;800&family=Teko:wght@600;700&display=swap');*{box-sizing:border-box;}html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:radial-gradient(circle at center, rgb(10,28,54) 0%, rgb(3,8,17) 100%);font-family:'Rajdhani',sans-serif;color:white;}.board-wrapper{max-width:1320px;margin:35px auto;padding:0 25px;animation:fadeInBoard 0.8s ease;}@keyframes fadeInBoard{from{opacity:0;}to{opacity:1;}}.board-header{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:3px solid #f2c400;padding-bottom:10px;margin-bottom:22px;}.bh-title{font-family:'Teko',sans-serif;font-size:48px;color:#f2c400;letter-spacing:2px;text-transform:uppercase;}.bh-sub{font-size:16px;font-weight:800;color:#00e5ff;letter-spacing:3px;}.standings-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px 28px;}.st-table{width:100%;border-collapse:separate;border-spacing:0 6px;}.st-head{background:#f2c400;color:#040811;font-weight:800;font-size:13px;}.st-head th{padding:7px 10px;text-align:center;}.st-head th:nth-child(2){text-align:left;}.st-row{background:rgb(9,28,54);}.st-row.top1{background:rgb(36,31,10);outline:1px solid #f2c400;}.st-row td{padding:8px 10px;text-align:center;font-weight:800;font-size:16px;}.st-row td:first-child{color:#f2c400;width:68px;}.st-team{display:flex;align-items:center;gap:10px;text-align:left;}.st-logo{width:26px;height:26px;object-fit:contain;border-radius:4px;}.st-pts{color:#f2c400;font-size:18px;background:rgba(242,196,0,0.12);}</style></head><body><div class="board-wrapper"><div class="board-header"><div><div class="bh-sub" id="stTourney">ESPORTS NATION INDIA</div><div class="bh-title">OVERALL STANDINGS</div></div><div class="bh-title" style="font-size:34px;">LEADERBOARD</div></div><div class="standings-grid"><table class="st-table"><thead><tr class="st-head"><th>#</th><th>TEAM</th><th>M</th><th>WWCD</th><th>KILLS</th><th>PLACE</th><th>TOTAL</th></tr></thead><tbody id="colLeft"></tbody></table><table class="st-table"><thead><tr class="st-head"><th>#</th><th>TEAM</th><th>M</th><th>WWCD</th><th>KILLS</th><th>PLACE</th><th>TOTAL</th></tr></thead><tbody id="colRight"></tbody></table></div></div>
 <script>
 async function loadSt(){
     try{
         const [cRes, tRes]=await Promise.all([fetch("/api/config"),fetch("/api/teams")]);
         const cfg=await cRes.json(); const data=await tRes.json();
-        document.getElementById("stTourney").innerText=cfg.tournament||"ENI ESPORTS";
+        document.getElementById("stTourney").innerText=cfg.tournament||"ESPORTS NATION INDIA";
         const sorted=[...data].sort((a,b)=>{
             if(a.absent!==b.absent)return a.absent?1:-1;
             return ((b.overall_pts||0)+(b.points||0)) - ((a.overall_pts||0)+(a.points||0));
@@ -997,7 +1153,9 @@ setInterval(cW,1000);
 # =========================================================
 
 @app.route("/")
-def admin(): return render_template_string(ADMIN_HTML)
+def admin(): 
+    return render_template_string(ADMIN_HTML)
+
 @app.route("/overlay/pt")
 def overlay_pt(): return render_template_string(PT_HTML)
 @app.route("/overlay/elimination")
@@ -1037,10 +1195,18 @@ def api_themes():
     if request.method == "POST":
         data = request.get_json() or {}
         themes_data = load_themes()
-        match_key = data.get("match_key", "MATCH 1").strip().upper()
-        theme_cfg = data.get("theme", {})
-        if "matches" not in themes_data: themes_data["matches"] = {}
-        themes_data["matches"][match_key] = theme_cfg
+        
+        # Admin Theme Setting
+        if "admin_theme" in data:
+            themes_data["admin_theme"] = data["admin_theme"]
+            
+        # OBS Match Theme Setting
+        if "match_key" in data:
+            match_key = data.get("match_key", "MATCH 1").strip().upper()
+            theme_cfg = data.get("theme", {})
+            if "matches" not in themes_data: themes_data["matches"] = {}
+            themes_data["matches"][match_key] = theme_cfg
+            
         save_themes(themes_data)
         return jsonify({"success": True})
     return jsonify({"themes": load_themes(), "presets": BUILTIN_PRESETS})
@@ -1055,7 +1221,8 @@ def api_active_theme():
     return jsonify({"match": current_match, "theme": active})
 
 @app.route("/api/teams")
-def api_teams(): return jsonify(load())
+def api_teams(): 
+    return jsonify(load())
 
 @app.route("/api/undo", methods=["POST"])
 def api_undo():
@@ -1098,6 +1265,32 @@ def clear_history():
     for t in teams:
         t["matches_played"] = 0; t["overall_kills"] = 0
         t["overall_place_pts"] = 0; t["overall_pts"] = 0; t["wwcd"] = 0
+    save(teams)
+    return jsonify({"success": True})
+
+@app.route("/api/reset_all", methods=["POST"])
+def reset_all():
+    """Resets everything to zero and 0% progress except the Match Option."""
+    save_state_for_undo()
+    if os.path.exists(HISTORY_FILE):
+        try: os.remove(HISTORY_FILE)
+        except: pass
+
+    teams = load()
+    for t in teams:
+        t["kills"] = 0
+        t["position"] = 0
+        t["points"] = 0
+        t["placement_points"] = 0
+        t["overall_kills"] = 0
+        t["overall_place_pts"] = 0
+        t["overall_pts"] = 0
+        t["matches_played"] = 0
+        t["wwcd"] = 0
+        t["players"] = [1] * len(t.get("players", [1, 1, 1, 1]))
+        t["elim_ts"] = 0
+        t["match_saved_flag"] = False
+
     save(teams)
     return jsonify({"success": True})
 
@@ -1214,7 +1407,7 @@ def update():
             
             if sum(team["players"]) == 0 and team.get("position", 0) == 0:
                 assigned_positions = [t.get("position", 0) for t in teams if t.get("position", 0) > 0]
-                for p in range(total_active, 0, -1):
+                for p in range(total_active, 1, -1):
                     if p not in assigned_positions:
                         team["position"] = p; break
                 team["elim_ts"] = time.time()
@@ -1230,7 +1423,7 @@ def update():
 
                 if now_alive == 0 and team.get("position", 0) == 0:
                     assigned_positions = [t.get("position", 0) for t in teams if t.get("position", 0) > 0]
-                    for p in range(total_active, 0, -1):
+                    for p in range(total_active, 1, -1):
                         if p not in assigned_positions:
                             team["position"] = p; break
                     team["elim_ts"] = time.time()
@@ -1256,7 +1449,7 @@ def eliminate():
             team["players"] = [0] * len(team.get("players", [1,1,1,1]))
             if team.get("position", 0) == 0:
                 assigned_positions = [t.get("position", 0) for t in teams if t.get("position", 0) > 0]
-                for p in range(total_active, 0, -1):
+                for p in range(total_active, 1, -1):
                     if p not in assigned_positions:
                         team["position"] = p; break
             team["elim_ts"] = time.time()
@@ -1286,6 +1479,9 @@ def save_match_overall():
     if teams and all(t.get("match_saved_flag", False) for t in teams if not t.get("absent")):
         return jsonify({"error": "Match already saved! Click NEW MATCH before saving again."}), 400
 
+    auto_assign_winner_if_one_left(teams)
+    recalculate_all(teams)
+
     current_match_data = []
     for t in teams:
         if not t.get("absent", False):
@@ -1298,9 +1494,13 @@ def save_match_overall():
             t["match_saved_flag"] = True
             
         current_match_data.append({
-            "id": t["id"], "name": t["name"], "kills": t.get("kills", 0),
-            "placement_points": t.get("placement_points", 0), "total_pts": t.get("points", 0),
-            "position": t.get("position", 0), "absent": t.get("absent", False)
+            "id": t["id"],
+            "name": t["name"],
+            "kills": t.get("kills", 0),
+            "placement_points": t.get("placement_points", 0),
+            "total_pts": t.get("points", 0),
+            "position": t.get("position", 0),
+            "absent": t.get("absent", False)
         })
 
     history = []
@@ -1312,11 +1512,14 @@ def save_match_overall():
             
     match_number = len(history) + 1
     cfg = load_config()
+    
+    # Save full detailed match snapshot
     history.append({
         "match_num": match_number,
         "match_name": cfg.get("match", f"MATCH {match_number}"),
         "map": cfg.get("map", "ERANGEL"),
-        "teams": current_match_data
+        "timestamp": time.strftime("%d %b %Y, %I:%M %p"),
+        "teams": copy.deepcopy(current_match_data)
     })
     
     with file_lock:
