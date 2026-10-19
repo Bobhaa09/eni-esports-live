@@ -18,6 +18,8 @@ UPLOAD_FOLDER = os.path.join("static", "logos")
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
+SERVER_LOGO_FILENAME = "server_logo.webp"
+SERVER_LOGO_PATH = os.path.join(UPLOAD_FOLDER, SERVER_LOGO_FILENAME)
 
 MAX_HISTORY = 20
 undo_stack = []
@@ -102,13 +104,6 @@ def load():
                 auto_assign_winner_if_one_left(data)
                 return recalculate_all(data)
         except Exception:
-            if os.path.exists(DATA_FILE + ".bak"):
-                try:
-                    with open(DATA_FILE + ".bak", "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                        auto_assign_winner_if_one_left(data)
-                        return recalculate_all(data)
-                except Exception: return []
             return []
 
 def save_state_for_undo():
@@ -137,14 +132,14 @@ def save_config(config):
     safe_write_json(CONFIG_FILE, config)
 
 BUILTIN_PRESETS = {
-    "Classic Gold": {"primary": "#f2c400", "secondary": "#00e5ff", "bg_primary": "#06090e", "bg_secondary": "#0d121a"},
-    "Royal Blue": {"primary": "#00b4d8", "secondary": "#90e0ef", "bg_primary": "#03045e", "bg_secondary": "#0a1128"},
-    "Crimson Red": {"primary": "#ff2a55", "secondary": "#ffb703", "bg_primary": "#1a050a", "bg_secondary": "#260810"},
-    "Cyber Purple": {"primary": "#b5179e", "secondary": "#4cc9f0", "bg_primary": "#10002b", "bg_secondary": "#1d0538"},
-    "Neon Cyber": {"primary": "#00ffcc", "secondary": "#ff00ff", "bg_primary": "#050b14", "bg_secondary": "#0d1726"},
-    "Sunset Orange": {"primary": "#ff7700", "secondary": "#ffbb00", "bg_primary": "#1a0f05", "bg_secondary": "#261507"},
-    "Emerald Neon": {"primary": "#00ff88", "secondary": "#00e5ff", "bg_primary": "#041a10", "bg_secondary": "#082618"},
-    "Rose Gold": {"primary": "#ff85a1", "secondary": "#fbb1bd", "bg_primary": "#1f0a10", "bg_secondary": "#2e0f18"}
+    "Classic Gold": {"primary": "#f2c400", "secondary": "#00e5ff", "map_color": "#ffffff", "bg_primary": "#06090e", "bg_secondary": "#0d121a"},
+    "Royal Blue": {"primary": "#00b4d8", "secondary": "#90e0ef", "map_color": "#00ffff", "bg_primary": "#03045e", "bg_secondary": "#0a1128"},
+    "Crimson Red": {"primary": "#ff2a55", "secondary": "#ffb703", "map_color": "#ffdd00", "bg_primary": "#1a050a", "bg_secondary": "#260810"},
+    "Cyber Purple": {"primary": "#b5179e", "secondary": "#4cc9f0", "map_color": "#ffffff", "bg_primary": "#10002b", "bg_secondary": "#1d0538"},
+    "Neon Cyber": {"primary": "#00ffcc", "secondary": "#ff00ff", "map_color": "#ff00ff", "bg_primary": "#050b14", "bg_secondary": "#0d1726"},
+    "Sunset Orange": {"primary": "#ff7700", "secondary": "#ffbb00", "map_color": "#ffffff", "bg_primary": "#1a0f05", "bg_secondary": "#261507"},
+    "Emerald Neon": {"primary": "#00ff88", "secondary": "#00e5ff", "map_color": "#00e5ff", "bg_primary": "#041a10", "bg_secondary": "#082618"},
+    "Rose Gold": {"primary": "#ff85a1", "secondary": "#fbb1bd", "map_color": "#ffffff", "bg_primary": "#1f0a10", "bg_secondary": "#2e0f18"}
 }
 
 def load_themes():
@@ -197,7 +192,6 @@ ADMIN_HTML = r"""
     --cyan: #00e5ff;
     --red: #ff2a55;
     --green: #00ff66;
-    --dead: #ff2a55;
     --border: #1a2332;
 }
 
@@ -239,8 +233,22 @@ body {
     gap: 6px;
 }
 .nav-left { display: flex; align-items: center; gap: 6px; }
-.btn-menu { background: #161f2e; border: 1px solid #2a374a; color: var(--gold); padding: 5px 10px; border-radius: 5px; font-size: 14px; font-weight: 800; cursor: pointer; }
+.nav-logo-mini { width: 26px; height: 26px; object-fit: contain; border-radius: 4px; border: 1px solid var(--gold); }
+.btn-menu { background: #161f2e; border: 1px solid #2a374a; color: var(--gold); padding: 4px 8px; border-radius: 5px; font-size: 14px; font-weight: 800; cursor: pointer; }
 .live-badge { color: var(--green); font-size: 14px; font-weight: 800; }
+
+.user-badge {
+    background: rgba(242,196,0,0.12);
+    border: 1px solid rgba(242,196,0,0.3);
+    color: var(--gold);
+    font-size: 11px;
+    font-weight: 800;
+    padding: 3px 6px;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
 
 .nav-actions { display: flex; align-items: center; gap: 4px; }
 .nav-btn {
@@ -533,8 +541,10 @@ body {
 
 <div class="top-nav">
     <div class="nav-left">
+        <img src="/static/logos/server_logo.webp" class="nav-logo-mini" alt="Logo" onerror="this.style.display='none'">
         <button class="btn-menu" onclick="toggleMenu()">⋮</button>
         <span class="live-badge" id="topTeams">0 ALIVE</span>
+        <div class="user-badge">🟢 <span id="userCountText">1 USERS</span></div>
     </div>
     <div class="nav-actions">
         <button class="nav-btn" onclick="uiUndo()" title="Undo">↩</button>
@@ -616,7 +626,7 @@ body {
     <div class="modal-content">
         <h3 style="margin:0 0 8px 0; font-size:16px; color:var(--gold);">📡 OBS OVERLAY THEMES</h3>
         <label style="font-size:11px; color:#b0c4de;">CHOOSE OVERLAY PALETTE</label>
-        <select id="tmPresetSelect" style="width:100%; padding:6px; background:#080c12; color:#fff; border:1px solid #1e293b; border-radius:4px; margin-top:4px; margin-bottom:12px; font-size:13px;">
+        <select id="tmPresetSelect" onchange="onObsPresetDropdownChange()" style="width:100%; padding:6px; background:#080c12; color:#fff; border:1px solid #1e293b; border-radius:4px; margin-top:4px; margin-bottom:10px; font-size:13px;">
             <option value="Classic Gold">Classic Gold (Golden Glow)</option>
             <option value="Royal Blue">Royal Blue (Deep Ocean)</option>
             <option value="Crimson Red">Crimson Red (Aggressive Fire)</option>
@@ -626,6 +636,13 @@ body {
             <option value="Emerald Neon">Emerald Neon (Pro League Green)</option>
             <option value="Rose Gold">Rose Gold (Pyaara Pink Theme)</option>
         </select>
+
+        <label style="font-size:11px; color:#b0c4de;">🗺️ MAP NAME COLOR (MATCH INFO OVERLAY)</label>
+        <div style="display:flex; align-items:center; gap:8px; margin-top:4px; margin-bottom:14px;">
+            <input type="color" id="tmMapColorPicker" style="width:40px; height:32px; background:none; border:1px solid #1e293b; border-radius:4px; cursor:pointer;" value="#ffffff">
+            <span style="font-size:11px; color:#7b8ea6;">Click to choose custom map color</span>
+        </div>
+
         <div style="display:flex; gap:6px;">
             <button class="nav-btn gold" style="flex:1; padding:7px;" onclick="saveObsTheme()">SAVE OVERLAY THEME</button>
             <button class="nav-btn red" style="padding:7px;" onclick="closeModal('obsThemeModal')">CLOSE</button>
@@ -661,6 +678,7 @@ let allThemesData = { matches: {}, admin_theme: "Classic Gold" };
 let builtinPresetsData = {};
 let isSyncing = false;
 let lastKnownHash = "";
+const mySessionId = "usr_" + Math.random().toString(36).substring(2, 9);
 
 function applyAdminTheme(paletteName) {
     const t = builtinPresetsData[paletteName] || builtinPresetsData["Classic Gold"];
@@ -670,6 +688,19 @@ function applyAdminTheme(paletteName) {
     document.documentElement.style.setProperty('--bg-main', t.bg_primary);
     document.documentElement.style.setProperty('--card-bg', t.bg_secondary);
 }
+
+async function pingHeartbeat() {
+    try {
+        const res = await fetch("/api/ping?cid=" + mySessionId);
+        if(res.ok) {
+            const data = await res.json();
+            const count = data.users || 1;
+            document.getElementById("userCountText").innerText = count + (count > 1 ? " USERS" : " USER");
+        }
+    } catch(e){}
+}
+setInterval(pingHeartbeat, 3000);
+pingHeartbeat();
 
 async function loadConfigData() {
     try {
@@ -856,18 +887,29 @@ async function openObsThemeModal() {
         const s = (curPreset === p) ? "selected" : "";
         preSel.innerHTML += `<option value="${p}" ${s}>${p}</option>`;
     });
+
+    const curMapCol = (allThemesData.matches && allThemesData.matches[curMatch] && allThemesData.matches[curMatch].map_color) ? allThemesData.matches[curMatch].map_color : (builtinPresetsData[curPreset] ? builtinPresetsData[curPreset].map_color : "#ffffff");
+    document.getElementById("tmMapColorPicker").value = curMapCol || "#ffffff";
+}
+
+function onObsPresetDropdownChange() {
+    const pName = document.getElementById("tmPresetSelect").value;
+    if(builtinPresetsData[pName] && builtinPresetsData[pName].map_color) {
+        document.getElementById("tmMapColorPicker").value = builtinPresetsData[pName].map_color;
+    }
 }
 
 async function saveObsTheme() {
     const curMatch = document.getElementById("cfgMatch").value;
     const pName = document.getElementById("tmPresetSelect").value;
-    const themeObj = { preset: pName, ...builtinPresetsData[pName] };
+    const mapColorVal = document.getElementById("tmMapColorPicker").value || "#ffffff";
+    const themeObj = { preset: pName, ...builtinPresetsData[pName], map_color: mapColorVal };
     await fetch("/api/themes", { 
         method: "POST", 
         headers: {"Content-Type": "application/json"}, 
         body: JSON.stringify({ match_key: curMatch, theme: themeObj }) 
     });
-    showToast(`Overlay Theme Saved!`);
+    showToast(`Overlay Theme & Map Color Saved!`);
     closeModal('obsThemeModal');
 }
 
@@ -959,7 +1001,6 @@ async function fastToggleAbsent(id) {
     const row = document.getElementById(`row-${id}`);
     const tm = teamsData.find(x => String(x.id) === String(id));
     
-    // Instant local memory and UI toggle
     let isNowAbs = false;
     if(tm) {
         tm.absent = !tm.absent;
@@ -1132,11 +1173,13 @@ async function syncTheme() {
 function applyTh(t) {
     let el = document.getElementById("dyn-th");
     if(!el) { el = document.createElement("style"); el.id="dyn-th"; document.head.appendChild(el); }
+    const customMapColor = t.map_color || "#ffffff";
     el.innerHTML = `
         .top-status-bar, .header, .st-head { background: ${t.primary} !important; color: ${t.bg_primary} !important; }
         .row, .st-row { background: linear-gradient(135deg, ${t.bg_primary}, ${t.bg_secondary}) !important; transition: all 0.4s ease; }
         .rank-cell, .pts, .st-pts, .bh-title, .mi-match, .winner-name { color: ${t.primary} !important; }
         .kills, .mi-tourney, .bh-sub { color: ${t.secondary} !important; }
+        .mi-map { color: ${customMapColor} !important; }
     `;
 }
 syncTheme(); setInterval(syncTheme, 2000);
@@ -1347,7 +1390,7 @@ def ping():
     now = time.time()
     connected_users[cid] = now
     active = sum(1 for ts in connected_users.values() if now - ts < 6)
-    return jsonify({"status": "ok", "users": active})
+    return jsonify({"status": "ok", "users": max(1, active)})
 
 @app.route("/api/config", methods=["GET", "POST"])
 def config_api():
@@ -1669,9 +1712,9 @@ def save_match_overall():
 
 if __name__ == "__main__":
     local_ip = get_local_ip()
-    print("=" * 60)
-    print("🔥 ESPORTS NATION INDIA CONTROLLER RUNNING SUCCESSFULLY")
-    print(f"👉 PC Browser URL    : http://127.0.0.1:5000/")
-    print(f"👉 Mobile Browser URL: http://{local_ip}:5000/")
-    print("=" * 60)
+    print("=" * 65)
+    print("🚀 ESPORTS NATION INDIA CONTROLLER READY")
+    print(f"👉 PC Browser Link    : http://127.0.0.1:5000/")
+    print(f"👉 Mobile Browser Link: http://{local_ip}:5000/")
+    print("=" * 65)
     app.run(host="0.0.0.0", port=5000, threaded=True)
