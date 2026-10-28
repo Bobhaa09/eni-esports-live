@@ -10,173 +10,21 @@ from flask import Flask, jsonify, render_template_string, request
 app = Flask(__name__)
 file_lock = Lock()
 
-DATA_FILE = "teams.json"
-CONFIG_FILE = "config.json"
-HISTORY_FILE = "match_history.json"
-THEMES_FILE = "themes.json"
+BASE_DATA_DIR = "data"
+ROOMS_DIR = os.path.join(BASE_DATA_DIR, "rooms")
 UPLOAD_FOLDER = os.path.join("static", "logos")
 
+os.makedirs(ROOMS_DIR, exist_ok=True)
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 SERVER_LOGO_FILENAME = "server_logo.webp"
 SERVER_LOGO_PATH = os.path.join(UPLOAD_FOLDER, SERVER_LOGO_FILENAME)
 
 MAX_HISTORY = 20
-undo_stack = []
-redo_stack = []
 connected_users = {}
 
 PLACEMENT = {1: 10, 2: 6, 3: 5, 4: 4, 5: 3, 6: 2, 7: 1, 8: 1}
-
-
-def get_local_ip():
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except Exception:
-        return "127.0.0.1"
-
-
-def placement_points(position):
-    try:
-        return PLACEMENT.get(int(position), 0)
-    except (ValueError, TypeError):
-        return 0
-
-
-def calculate_points(team):
-    kills = max(0, int(team.get("kills", 0)))
-    place = placement_points(team.get("position", 0))
-    return kills, place, (kills + place)
-
-
-def recalculate_all(teams):
-    if not isinstance(teams, list):
-        return []
-    for team in teams:
-        if not isinstance(team, dict):
-            continue
-        if "absent" not in team:
-            team["absent"] = False
-        if "overall_kills" not in team:
-            team["overall_kills"] = 0
-        if "overall_pts" not in team:
-            team["overall_pts"] = 0
-        if "overall_place_pts" not in team:
-            team["overall_place_pts"] = 0
-        if "matches_played" not in team:
-            team["matches_played"] = 0
-        if "wwcd" not in team:
-            team["wwcd"] = 0
-        if "players" not in team or not team["players"]:
-            team["players"] = [1, 1, 1, 1]
-
-        k, p, tot = calculate_points(team)
-        team["kills"] = k
-        team["placement_points"] = p
-        team["points"] = tot
-    return teams
-
-
-def auto_assign_winner_if_one_left(teams):
-    if not isinstance(teams, list):
-        return
-    active = [
-        t for t in teams if isinstance(t, dict) and not t.get("absent", False)
-    ]
-    alive = [t for t in active if any(p == 1 for p in t.get("players", []))]
-    if len(active) > 1 and len(alive) == 1:
-        winner = alive[0]
-        if winner.get("position", 0) != 1:
-            winner["position"] = 1
-            k, p, tot = calculate_points(winner)
-            winner["placement_points"] = p
-            winner["points"] = tot
-
-
-def safe_write_json(file_path, data):
-    with file_lock:
-        if os.path.exists(file_path):
-            try:
-                shutil.copy(file_path, file_path + ".bak")
-            except Exception:
-                pass
-        with open(file_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-
-
-def save(teams):
-    auto_assign_winner_if_one_left(teams)
-    recalculate_all(teams)
-    safe_write_json(DATA_FILE, teams)
-
-
-def load():
-    if not os.path.exists(DATA_FILE):
-        return []
-    with file_lock:
-        try:
-            with open(DATA_FILE, "r", encoding="utf-8") as f:
-                content = f.read().strip()
-                if not content:
-                    return []
-                data = json.loads(content)
-                auto_assign_winner_if_one_left(data)
-                return recalculate_all(data)
-        except Exception:
-            return []
-
-
-def save_state_for_undo():
-    global undo_stack, redo_stack
-    current_state = load()
-    undo_stack.append(copy.deepcopy(current_state))
-    if len(undo_stack) > MAX_HISTORY:
-        undo_stack.pop(0)
-    redo_stack.clear()
-
-
-def load_config():
-    default_cfg = {
-        "tournament": "ESPORTS NATION INDIA",
-        "match": "MATCH 1",
-        "map": "ERANGEL",
-        "caster1_name": "CASTER ALPHA",
-        "caster1_title": "PLAY-BY-PLAY",
-        "caster2_name": "ANALYST BRAVO",
-        "caster2_title": "COLOR COMMENTARY",
-        "start_timer_min": "5",
-        "broadcast_headline": "GRAND FINALS - DAY 1",
-        "discord_tag": "discord.gg/esportsindia",
-        "insta_tag": "@esportsnation.india",
-        "yt_tag": "@esportnationindia",
-        "chroma_key_mode": True,
-        "map_position": "bottom-right",
-        "dual_team1_name": "",
-        "dual_team1_sub": "POV 1",
-        "dual_team2_name": "",
-        "dual_team2_sub": "POV 2",
-    }
-    if not os.path.exists(CONFIG_FILE):
-        save_config(default_cfg)
-        return default_cfg
-    with file_lock:
-        try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                content = f.read().strip()
-                if not content:
-                    return default_cfg
-                return {**default_cfg, **json.loads(content)}
-        except Exception:
-            return default_cfg
-
-
-def save_config(config):
-    safe_write_json(CONFIG_FILE, config)
-
 
 BUILTIN_PRESETS = {
     "Classic Gold": {
@@ -186,92 +34,239 @@ BUILTIN_PRESETS = {
         "bg_primary": "#06090e",
         "bg_secondary": "#0d121a",
     },
-    "Royal Blue": {
-        "primary": "#00b4d8",
-        "secondary": "#90e0ef",
-        "map_color": "#00ffff",
-        "bg_primary": "#03045e",
-        "bg_secondary": "#0a1128",
-    },
-    "Crimson Red": {
-        "primary": "#ff2a55",
-        "secondary": "#ffb703",
-        "map_color": "#ffdd00",
-        "bg_primary": "#1a050a",
-        "bg_secondary": "#260810",
-    },
-    "Cyber Purple": {
-        "primary": "#b5179e",
-        "secondary": "#4cc9f0",
-        "map_color": "#ffffff",
-        "bg_primary": "#10002b",
-        "bg_secondary": "#1d0538",
-    },
-    "Neon Cyber": {
-        "primary": "#00ffcc",
-        "secondary": "#ff00ff",
-        "map_color": "#ff00ff",
-        "bg_primary": "#050b14",
-        "bg_secondary": "#0d1726",
-    },
-    "Sunset Orange": {
-        "primary": "#ff7700",
-        "secondary": "#ffbb00",
-        "map_color": "#ffffff",
-        "bg_primary": "#1a0f05",
-        "bg_secondary": "#261507",
-    },
-    "Emerald Neon": {
-        "primary": "#00ff88",
+    "Cyber Neon Green": {
+        "primary": "#00ff66",
         "secondary": "#00e5ff",
-        "map_color": "#00e5ff",
-        "bg_primary": "#041a10",
-        "bg_secondary": "#082618",
+        "map_color": "#00ffcc",
+        "bg_primary": "#03120b",
+        "bg_secondary": "#062215",
     },
-    "Rose Gold": {
-        "primary": "#ff85a1",
-        "secondary": "#fbb1bd",
-        "map_color": "#ffffff",
-        "bg_primary": "#1f0a10",
-        "bg_secondary": "#2e0f18",
+    "Phantom Purple": {
+        "primary": "#c084fc",
+        "secondary": "#38bdf8",
+        "map_color": "#e879f9",
+        "bg_primary": "#0f081d",
+        "bg_secondary": "#190e30",
+    },
+    "Toxic Acid": {
+        "primary": "#ccff00",
+        "secondary": "#00ffff",
+        "map_color": "#ffff00",
+        "bg_primary": "#0d1405",
+        "bg_secondary": "#17240a",
+    },
+    "Crimson Fire": {
+        "primary": "#ff2a55",
+        "secondary": "#ff9900",
+        "map_color": "#ffcc00",
+        "bg_primary": "#140408",
+        "bg_secondary": "#22080f",
+    },
+    "Frost Blizzard": {
+        "primary": "#38bdf8",
+        "secondary": "#a5f3fc",
+        "map_color": "#e0f2fe",
+        "bg_primary": "#04131f",
+        "bg_secondary": "#082136",
+    },
+    "Radiant Amber": {
+        "primary": "#fbbf24",
+        "secondary": "#f97316",
+        "map_color": "#fef08a",
+        "bg_primary": "#140e04",
+        "bg_secondary": "#241806",
+    },
+    "Hyper Pink": {
+        "primary": "#f43f5e",
+        "secondary": "#06b6d4",
+        "map_color": "#fda4af",
+        "bg_primary": "#17050d",
+        "bg_secondary": "#290a18",
+    },
+    "Midnight Steel": {
+        "primary": "#94a3b8",
+        "secondary": "#38bdf8",
+        "map_color": "#f1f5f9",
+        "bg_primary": "#090d14",
+        "bg_secondary": "#111824",
     },
 }
 
 
-def load_themes():
-    default_data = {
-        "admin_theme": "Classic Gold",
-        "matches": {
-            "MATCH 1": copy.deepcopy(BUILTIN_PRESETS["Classic Gold"]),
-            "MATCH 2": copy.deepcopy(BUILTIN_PRESETS["Royal Blue"]),
-            "MATCH 3": copy.deepcopy(BUILTIN_PRESETS["Crimson Red"]),
-        },
-    }
-    if not os.path.exists(THEMES_FILE):
-        save_themes(default_data)
-        return default_data
-    with file_lock:
-        try:
-            with open(THEMES_FILE, "r", encoding="utf-8") as f:
-                content = f.read().strip()
-                if not content:
-                    return default_data
-                data = json.loads(content)
-                if "matches" not in data:
-                    data["matches"] = default_data["matches"]
-                if "admin_theme" not in data:
-                    data["admin_theme"] = "Classic Gold"
-                return data
-        except Exception:
-            return default_data
+def get_local_ip():
+  try:
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.connect(("8.8.8.8", 80))
+    ip = s.getsockname()[0]
+    s.close()
+    return ip
+  except Exception:
+    return "127.0.0.1"
 
 
-def save_themes(data):
-    safe_write_json(THEMES_FILE, data)
+def sanitize_room(room):
+  if not room:
+    return "DEFAULT"
+  cleaned = "".join(c for c in room.strip().upper() if c.isalnum() or c in "-_")
+  return cleaned if cleaned else "DEFAULT"
 
 
-load_config()
-load_themes()
+def get_room_id():
+  r = request.args.get("room")
+  if not r and request.is_json:
+    r = (request.get_json(silent=True) or {}).get("room")
+  if not r:
+    r = request.form.get("room")
+  return sanitize_room(r)
+
+
+def get_room_file(room_id):
+  return os.path.join(ROOMS_DIR, f"{room_id}.json")
+
+
+def safe_read_json(path, default):
+  with file_lock:
+    if not os.path.exists(path):
+      return default
+    try:
+      with open(path, "r", encoding="utf-8") as f:
+        c = f.read().strip()
+        return json.loads(c) if c else default
+    except Exception:
+      return default
+
+
+def safe_write_json(path, data):
+  with file_lock:
+    if os.path.exists(path):
+      try:
+        shutil.copy(path, path + ".bak")
+      except Exception:
+        pass
+    with open(path, "w", encoding="utf-8") as f:
+      json.dump(data, f, indent=2)
+
+
+def get_default_room_data():
+  return {
+      "config": {
+          "tournament": "ESPORTS NATION INDIA",
+          "match": "MATCH 1",
+          "map": "ERANGEL",
+          "caster_count": 2,
+          "caster1_name": "CASTER ALPHA",
+          "caster1_title": "PLAY-BY-PLAY",
+          "caster2_name": "ANALYST BRAVO",
+          "caster2_title": "COLOR COMMENTARY",
+          "caster3_name": "SPECIAL GUEST",
+          "caster3_title": "EXPERT ANALYST",
+          "start_timer_min": "5",
+          "broadcast_headline": "GRAND FINALS - DAY 1",
+          "discord_tag": "discord.gg/esportsindia",
+          "insta_tag": "@esportsnation.india",
+          "yt_tag": "@esportnationindia",
+          "chroma_key_mode": True,
+          "map_position": "bottom-right",
+          "dual_team1_name": "",
+          "dual_team1_sub": "POV 1",
+          "dual_team2_name": "",
+          "dual_team2_sub": "POV 2",
+      },
+      "themes": {
+          "admin_theme": "Classic Gold",
+          "matches": {
+              "MATCH 1": copy.deepcopy(BUILTIN_PRESETS["Classic Gold"]),
+              "MATCH 2": copy.deepcopy(BUILTIN_PRESETS["Cyber Neon Green"]),
+              "MATCH 3": copy.deepcopy(BUILTIN_PRESETS["Crimson Fire"]),
+          },
+      },
+      "teams": [],
+      "history": [],
+      "undo_stack": [],
+      "redo_stack": [],
+  }
+
+
+def load_room_data(room_id):
+  path = get_room_file(room_id)
+  data = safe_read_json(path, None)
+  if not data:
+    data = get_default_room_data()
+    safe_write_json(path, data)
+  return data
+
+
+def save_room_data(room_id, data):
+  path = get_room_file(room_id)
+  safe_write_json(path, data)
+
+
+def placement_points(pos):
+  try:
+    return PLACEMENT.get(int(pos), 0)
+  except (ValueError, TypeError):
+    return 0
+
+
+def calculate_points(team):
+  kills = max(0, int(team.get("kills", 0)))
+  place = placement_points(team.get("position", 0))
+  return kills, place, (kills + place)
+
+
+def recalculate_all(teams):
+  if not isinstance(teams, list):
+    return []
+  for team in teams:
+    if not isinstance(team, dict):
+      continue
+    if "absent" not in team:
+      team["absent"] = False
+    if "overall_kills" not in team:
+      team["overall_kills"] = 0
+    if "overall_pts" not in team:
+      team["overall_pts"] = 0
+    if "overall_place_pts" not in team:
+      team["overall_place_pts"] = 0
+    if "matches_played" not in team:
+      team["matches_played"] = 0
+    if "wwcd" not in team:
+      team["wwcd"] = 0
+    if "players" not in team or not team["players"]:
+      team["players"] = [1, 1, 1, 1]
+
+    k, p, tot = calculate_points(team)
+    team["kills"] = k
+    team["placement_points"] = p
+    team["points"] = tot
+  return teams
+
+
+def auto_assign_winner_if_one_left(teams):
+  if not isinstance(teams, list):
+    return
+  active = [
+      t for t in teams if isinstance(t, dict) and not t.get("absent", False)
+  ]
+  alive = [t for t in active if any(p == 1 for p in t.get("players", []))]
+  if len(active) > 1 and len(alive) == 1:
+    winner = alive[0]
+    if winner.get("position", 0) != 1:
+      winner["position"] = 1
+      k, p, tot = calculate_points(winner)
+      winner["placement_points"] = p
+      winner["points"] = tot
+
+
+def save_state_for_undo(room_data):
+  undo_stack = room_data.setdefault("undo_stack", [])
+  redo_stack = room_data.setdefault("redo_stack", [])
+  current_teams = room_data.get("teams", [])
+  undo_stack.append(copy.deepcopy(current_teams))
+  if len(undo_stack) > MAX_HISTORY:
+    undo_stack.pop(0)
+  redo_stack.clear()
+
 
 # =========================================================
 # GLOBAL BROADCAST ENGINE (CSS + ANIMATIONS)
@@ -280,9 +275,10 @@ load_themes()
 THEME_ENGINE_JS = r"""
 <script>
 let lastTheme="";
+const currentRoom = new URLSearchParams(window.location.search).get("room") || "DEFAULT";
 async function syncTheme() {
     try {
-        const res = await fetch("/api/active_theme?t=" + Date.now());
+        const res = await fetch(`/api/active_theme?room=${encodeURIComponent(currentRoom)}&t=${Date.now()}`);
         if(!res.ok) return;
         const d = await res.json();
         let str = JSON.stringify(d.theme);
@@ -394,7 +390,7 @@ body, html { width: 100vw; height: 100vh; overflow: hidden; background: transpar
 """
 
 # =========================================================
-# ADMIN PANEL (WITH 3 DOTS MENU & OVERLAY STUDIO)
+# COMPACT MULTI-ROOM ADMIN PANEL
 # =========================================================
 
 ADMIN_HTML = r"""
@@ -432,15 +428,36 @@ body {
 .main-header {
     background: linear-gradient(180deg, #101926 0%, #080c13 100%);
     border-bottom: 2px solid var(--gold);
-    padding: 8px 12px;
+    padding: 6px 12px;
     display: flex;
     align-items: center;
     justify-content: space-between;
 }
 .header-brand { display: flex; align-items: center; gap: 8px; }
-.header-logo { width: 36px; height: 36px; object-fit: contain; border-radius: 6px; border: 1px solid var(--gold); background: #000; }
-.brand-text h1 { margin: 0; font-family: 'Teko', sans-serif; font-size: 24px; color: var(--gold); line-height: 1; letter-spacing: 1px; }
-.brand-text span { font-size: 11px; font-weight: 800; color: var(--cyan); letter-spacing: 1.5px; display: block; }
+.header-logo { width: 32px; height: 32px; object-fit: contain; border-radius: 5px; border: 1px solid var(--gold); background: #000; }
+.brand-text h1 { margin: 0; font-family: 'Teko', sans-serif; font-size: 22px; color: var(--gold); line-height: 1; letter-spacing: 1px; }
+.brand-text span { font-size: 10px; font-weight: 800; color: var(--cyan); letter-spacing: 1.5px; display: block; }
+
+.room-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: #090e16;
+    padding: 3px 8px;
+    border-radius: 5px;
+    border: 1px solid #1a2638;
+}
+.room-input {
+    background: #04070c;
+    border: 1px solid #223247;
+    color: var(--gold);
+    font-weight: 800;
+    font-size: 12px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    width: 110px;
+    text-transform: uppercase;
+}
 
 .top-nav {
     display: flex;
@@ -448,16 +465,15 @@ body {
     justify-content: space-between;
     background: #0a0e16;
     border-bottom: 1px solid var(--border);
-    padding: 6px 8px;
+    padding: 4px 8px;
     position: sticky;
     top: 0;
     z-index: 100;
     gap: 6px;
 }
 .nav-left { display: flex; align-items: center; gap: 6px; }
-.nav-logo-mini { width: 26px; height: 26px; object-fit: contain; border-radius: 4px; border: 1px solid var(--gold); }
-.btn-menu { background: #161f2e; border: 1px solid #2a374a; color: var(--gold); padding: 4px 8px; border-radius: 5px; font-size: 16px; font-weight: 800; cursor: pointer; }
-.live-badge { color: var(--green); font-size: 14px; font-weight: 800; }
+.btn-menu { background: #161f2e; border: 1px solid #2a374a; color: var(--gold); padding: 3px 8px; border-radius: 4px; font-size: 15px; font-weight: 800; cursor: pointer; }
+.live-badge { color: var(--green); font-size: 13px; font-weight: 800; }
 
 .user-badge {
     background: rgba(242,196,0,0.12);
@@ -465,7 +481,7 @@ body {
     color: var(--gold);
     font-size: 11px;
     font-weight: 800;
-    padding: 3px 6px;
+    padding: 2px 6px;
     border-radius: 4px;
     display: flex;
     align-items: center;
@@ -477,9 +493,9 @@ body {
     background: #141d2b;
     border: 1px solid #222f42;
     color: #cbd5e1;
-    padding: 5px 8px;
-    border-radius: 5px;
-    font-size: 12px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 11px;
     font-weight: 800;
     text-decoration: none;
     cursor: pointer;
@@ -493,10 +509,10 @@ body {
 .match-config-box {
     background: #0b111a;
     border-bottom: 1px solid var(--border);
-    padding: 6px 8px;
+    padding: 4px 8px;
 }
 .match-config-box summary {
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 800;
     color: var(--gold);
     cursor: pointer;
@@ -505,13 +521,13 @@ body {
     display: flex;
     gap: 6px;
     flex-wrap: wrap;
-    margin-top: 6px;
+    margin-top: 4px;
 }
 .cfg-input {
     background: #06090e;
     color: #fff;
     border: 1px solid #222f42;
-    padding: 5px 8px;
+    padding: 4px 8px;
     font-size: 12px;
     font-weight: 800;
     border-radius: 4px;
@@ -521,8 +537,8 @@ body {
 
 .obs-strip {
     display: flex;
-    gap: 5px;
-    padding: 5px 8px;
+    gap: 4px;
+    padding: 4px 8px;
     background: #070a0f;
     border-bottom: 1px solid #131a24;
     overflow-x: auto;
@@ -531,9 +547,9 @@ body {
     background: #111722;
     border: 1px solid #202b3a;
     color: #b0c4de;
-    padding: 3px 8px;
+    padding: 3px 7px;
     border-radius: 4px;
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 800;
     text-decoration: none;
     white-space: nowrap;
@@ -544,7 +560,7 @@ body {
     display: flex;
     align-items: center;
     gap: 4px;
-    padding: 5px 8px;
+    padding: 4px 8px;
     background: #0a0f16;
     border-bottom: 1px solid #141c27;
 }
@@ -567,7 +583,7 @@ body {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    height: 40px;
+    height: 36px;
     padding: 0 6px;
     border-bottom: 1px solid #141d2a;
     background: var(--card-bg) !important;
@@ -581,7 +597,7 @@ body {
 
 .slot-num {
     width: 26px;
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 800;
     color: #7b8ea6;
     flex-shrink: 0;
@@ -591,23 +607,10 @@ body {
     flex: 1;
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 4px;
     overflow: hidden;
     padding-right: 4px;
 }
-
-.admin-t-logo {
-    width: 22px;
-    height: 22px;
-    object-fit: contain;
-    border-radius: 4px;
-    background: rgba(255,255,255,0.05);
-    border: 1px solid #1e293b;
-    cursor: pointer;
-    flex-shrink: 0;
-    transition: 0.2s;
-}
-.admin-t-logo:hover { border-color: var(--cyan); transform: scale(1.1); }
 
 .t-name {
     font-size: 13px;
@@ -617,7 +620,7 @@ body {
     overflow: hidden;
     text-overflow: ellipsis;
     text-transform: uppercase;
-    min-width: 60px;
+    min-width: 70px;
     flex: 1;
 }
 
@@ -626,7 +629,7 @@ body {
     color: var(--cyan);
     border: 1px solid #222f42;
     border-radius: 3px;
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 800;
     padding: 2px 3px;
     outline: none;
@@ -640,7 +643,7 @@ body {
     color: var(--green);
     font-size: 10px;
     font-weight: 800;
-    padding: 3px 5px;
+    padding: 2px 5px;
     border-radius: 3px;
     cursor: pointer;
     flex-shrink: 0;
@@ -661,11 +664,11 @@ body {
 }
 
 .dot {
-    width: 13px;
-    height: 13px;
+    width: 12px;
+    height: 12px;
     border-radius: 50%;
     background: var(--green);
-    box-shadow: 0 0 6px rgba(0,255,102,0.4);
+    box-shadow: 0 0 5px rgba(0,255,102,0.4);
     cursor: pointer;
     transition: transform 0.08s, background 0.1s;
     touch-action: manipulation;
@@ -673,7 +676,7 @@ body {
 .dot:active { transform: scale(1.3); }
 .dot.dead { 
     background: var(--red) !important; 
-    box-shadow: 0 0 6px rgba(255,42,85,0.7) !important;
+    box-shadow: 0 0 5px rgba(255,42,85,0.7) !important;
     border: none !important;
 }
 
@@ -684,13 +687,13 @@ body {
     flex-shrink: 0;
 }
 .btn-k {
-    width: 26px;
-    height: 26px;
+    width: 24px;
+    height: 24px;
     background: #16202e;
     border: 1px solid #2b3a4f;
     color: #fff;
     border-radius: 3px;
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 800;
     display: flex;
     align-items: center;
@@ -704,7 +707,7 @@ body {
 .k-val {
     min-width: 18px;
     text-align: center;
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 800;
     color: #fff;
 }
@@ -714,10 +717,10 @@ body {
     color: #cbd5e1;
     border: 1px solid #222f42;
     border-radius: 3px;
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 800;
     padding: 2px;
-    width: 58px;
+    width: 56px;
     outline: none;
     cursor: pointer;
 }
@@ -726,8 +729,8 @@ body {
     background: rgba(255, 42, 85, 0.15);
     border: 1px solid var(--red);
     color: var(--red);
-    padding: 3px 6px;
-    font-size: 11px;
+    padding: 2px 5px;
+    font-size: 10px;
     font-weight: 800;
     border-radius: 3px;
     cursor: pointer;
@@ -748,15 +751,15 @@ body {
 .site-footer {
     background: #080c13;
     border-top: 1px solid var(--border);
-    padding: 12px 10px;
+    padding: 8px 10px;
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
     margin-top: auto;
 }
 .footer-social-links { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
-.social-link { background: #141d2b; border: 1px solid var(--border); color: #cbd5e1; padding: 4px 10px; border-radius: 6px; font-size: 11px; font-weight: 800; text-decoration: none; }
+.social-link { background: #141d2b; border: 1px solid var(--border); color: #cbd5e1; padding: 3px 8px; border-radius: 5px; font-size: 10px; font-weight: 800; text-decoration: none; }
 .footer-copy { font-size: 10px; color: #64748b; font-weight: 700; text-align: center; }
 
 .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--gold); color: #000; padding: 5px 18px; border-radius: 20px; font-weight: 800; font-size: 11px; opacity: 0; visibility: hidden; transition: 0.2s; z-index: 9999; }
@@ -770,15 +773,18 @@ body {
         <img src="/static/logos/server_logo.webp" class="header-logo" alt="Logo" onerror="this.style.display='none'">
         <div class="brand-text">
             <h1>ESPORTS NATION INDIA</h1>
-            <span>PRODUCTION ADMIN PANEL</span>
+            <span>MULTI-ROOM PRODUCTION SUITE</span>
         </div>
+    </div>
+    <div class="room-bar">
+        <span style="font-size:11px; color:#94a3b8; font-weight:800;">ROOM:</span>
+        <input type="text" id="activeRoomInput" class="room-input" value="DEFAULT">
+        <button class="nav-btn gold" onclick="switchRoom()">JOIN</button>
     </div>
 </div>
 
 <div class="top-nav">
     <div class="nav-left">
-        <img src="/static/logos/server_logo.webp" class="nav-logo-mini" alt="Logo" onerror="this.style.display='none'">
-        <!-- 3 DOTS MENU -->
         <button class="btn-menu" onclick="toggleMenu()" title="Open Menu">⋮</button>
         <span class="live-badge" id="topTeams">0 ALIVE</span>
         <div class="user-badge">🟢 <span id="userCountText">1 USERS</span></div>
@@ -803,22 +809,11 @@ body {
             <option value="RONDO">RONDO</option>
             <option value="SANHOK">SANHOK</option>
         </select>
-        <button class="nav-btn gold" style="padding:5px 10px;" onclick="saveConfigData()">SAVE</button>
+        <button class="nav-btn gold" style="padding:4px 8px;" onclick="saveConfigData()">SAVE</button>
     </div>
 </details>
 
-<div class="obs-strip">
-    <a href="/overlay/starting" target="_blank" class="obs-badge" style="color:var(--cyan); border-color:rgba(0,229,255,0.4);">⏳ STARTING</a>
-    <a href="/overlay/caster" target="_blank" class="obs-badge" style="color:var(--gold); border-color:rgba(242,196,0,0.4);">🎙️ CASTER DESK</a>
-    <a href="/overlay/pt" target="_blank" class="obs-badge">📊 LIVE PT</a>
-    <a href="/overlay/mapgame" target="_blank" class="obs-badge">🗺️ MINI-MAP PiP</a>
-    <a href="/overlay/dualpov" target="_blank" class="obs-badge" style="color:#ff7700;">⚔️ DUAL POV</a>
-    <a href="/overlay/standings" target="_blank" class="obs-badge" style="color:var(--gold);">🏆 STANDINGS</a>
-    <a href="/overlay/elimination" target="_blank" class="obs-badge" style="color:var(--red);">💀 ELIM CARD</a>
-    <a href="/overlay/wwcd" target="_blank" class="obs-badge" style="color:var(--gold);">🍗 WWCD</a>
-    <a href="/overlay/brb" target="_blank" class="obs-badge">☕ BRB BREAK</a>
-    <a href="/overlay/ending" target="_blank" class="obs-badge" style="color:#c084fc;">🏁 ENDING</a>
-</div>
+<div class="obs-strip" id="obsStrip"></div>
 
 <div class="quick-strip">
     <input type="text" id="searchInput" class="search-input" placeholder="Search..." oninput="filterTeams()">
@@ -839,7 +834,6 @@ body {
     <div class="footer-copy">© 2026 ESPORTS NATION INDIA PRODUCTION. ALL RIGHTS RESERVED.</div>
 </footer>
 
-<!-- 3 DOTS SIDEBAR MENU -->
 <div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleMenu()"></div>
 <div class="sidebar-menu" id="sidebarMenu">
     <div style="display:flex; justify-content:space-between; margin-bottom:15px; border-bottom:1px solid #1e293b; padding-bottom:8px;">
@@ -855,31 +849,50 @@ body {
     <a href="#" class="menu-item" style="color:var(--red); margin-top:20px;" onclick="toggleMenu(); clearMatchHistory();">🗑️ Clear Match History</a>
 </div>
 
-<!-- BROADCAST OVERLAY STUDIO MODAL -->
+<!-- BROADCAST OVERLAYS STUDIO MODAL -->
 <div class="modal" id="studioModal">
     <div class="modal-content">
-        <h3 style="margin:0 0 10px 0; font-size:16px; color:var(--cyan);">🎬 BROADCAST OVERLAYS FULL ACCESS</h3>
-        <p style="font-size:11px; color:#8fa0b5; margin-top:0;">Customize caster names, timers, dual pov and game frames live.</p>
+        <h3 style="margin:0 0 10px 0; font-size:16px; color:var(--cyan);">🎬 BROADCAST OVERLAYS STUDIO</h3>
+        <p style="font-size:11px; color:#8fa0b5; margin-top:0;">Customize dynamic caster counts, timers & dual pov.</p>
 
-        <label style="font-size:11px; color:var(--gold); font-weight:800;">🎙️ CASTER 1 (LEFT DESK)</label>
-        <div style="display:flex; gap:6px; margin-bottom:10px;">
-            <input type="text" id="stCaster1" class="cfg-input" style="flex:1;" placeholder="Name (e.g. CASTER ALPHA)">
-            <input type="text" id="stRole1" class="cfg-input" style="flex:1;" placeholder="Role (e.g. PLAY-BY-PLAY)">
+        <label style="font-size:11px; color:var(--cyan); font-weight:800;">🎙️ NUMBER OF CASTERS (AUTO-ADJUSTS FRAME)</label>
+        <select id="stCasterCount" class="cfg-input" style="width:100%; margin-bottom:12px;" onchange="onCasterCountChange()">
+            <option value="1">1 Caster (Center Widescreen Frame)</option>
+            <option value="2">2 Casters (Dual Split Screen)</option>
+            <option value="3">3 Casters (Triple Desk Sync)</option>
+        </select>
+
+        <div id="cBox1">
+            <label style="font-size:11px; color:var(--gold); font-weight:800;">🎙️ CASTER 1 (LEFT / MAIN)</label>
+            <div style="display:flex; gap:6px; margin-bottom:8px;">
+                <input type="text" id="stCaster1" class="cfg-input" style="flex:1;" placeholder="Name (e.g. CASTER ALPHA)">
+                <input type="text" id="stRole1" class="cfg-input" style="flex:1;" placeholder="Role (e.g. PLAY-BY-PLAY)">
+            </div>
         </div>
 
-        <label style="font-size:11px; color:var(--gold); font-weight:800;">🎙️ CASTER 2 (RIGHT DESK)</label>
-        <div style="display:flex; gap:6px; margin-bottom:10px;">
-            <input type="text" id="stCaster2" class="cfg-input" style="flex:1;" placeholder="Name (e.g. ANALYST BRAVO)">
-            <input type="text" id="stRole2" class="cfg-input" style="flex:1;" placeholder="Role (e.g. COLOR COMMENTATOR)">
+        <div id="cBox2">
+            <label style="font-size:11px; color:var(--gold); font-weight:800;">🎙️ CASTER 2 (CENTER / RIGHT)</label>
+            <div style="display:flex; gap:6px; margin-bottom:8px;">
+                <input type="text" id="stCaster2" class="cfg-input" style="flex:1;" placeholder="Name (e.g. ANALYST BRAVO)">
+                <input type="text" id="stRole2" class="cfg-input" style="flex:1;" placeholder="Role (e.g. COLOR COMMENTARY)">
+            </div>
         </div>
 
-        <label style="font-size:11px; color:#ff7700; font-weight:800; display:block;">⚔️ DUAL POV TEAM / PLAYER 1 (LEFT)</label>
+        <div id="cBox3">
+            <label style="font-size:11px; color:var(--gold); font-weight:800;">🎙️ CASTER 3 (DESK ANALYST)</label>
+            <div style="display:flex; gap:6px; margin-bottom:10px;">
+                <input type="text" id="stCaster3" class="cfg-input" style="flex:1;" placeholder="Name (e.g. SPECIAL GUEST)">
+                <input type="text" id="stRole3" class="cfg-input" style="flex:1;" placeholder="Role (e.g. EXPERT ANALYST)">
+            </div>
+        </div>
+
+        <label style="font-size:11px; color:#ff7700; font-weight:800; display:block;">⚔️ DUAL POV TEAM 1 (LEFT)</label>
         <div style="display:flex; gap:6px; margin-bottom:8px;">
             <input type="text" id="stDual1Name" class="cfg-input" style="flex:2;" placeholder="Custom Name (Khali = Auto Alive)">
             <input type="text" id="stDual1Sub" class="cfg-input" style="flex:1;" placeholder="Tag (e.g. POV 1)">
         </div>
 
-        <label style="font-size:11px; color:#ff7700; font-weight:800; display:block;">⚔️ DUAL POV TEAM / PLAYER 2 (RIGHT)</label>
+        <label style="font-size:11px; color:#ff7700; font-weight:800; display:block;">⚔️ DUAL POV TEAM 2 (RIGHT)</label>
         <div style="display:flex; gap:6px; margin-bottom:10px;">
             <input type="text" id="stDual2Name" class="cfg-input" style="flex:2;" placeholder="Custom Name (Khali = Auto Alive)">
             <input type="text" id="stDual2Sub" class="cfg-input" style="flex:1;" placeholder="Tag (e.g. POV 2)">
@@ -891,7 +904,7 @@ body {
         <label style="font-size:11px; color:#cbd5e1; font-weight:800;">📢 HEADLINE / TICKER</label>
         <input type="text" id="stHeadline" class="cfg-input" style="width:100%; margin-bottom:10px;" placeholder="GRAND FINALS - DAY 1">
 
-        <label style="font-size:11px; color:var(--cyan); font-weight:800;">🟩 GREEN SCREEN (CHROMA KEY) MODE FOR GAMEPLAY</label>
+        <label style="font-size:11px; color:var(--cyan); font-weight:800;">🟩 GREEN SCREEN (CHROMA KEY) MODE</label>
         <select id="stChromaKey" class="cfg-input" style="width:100%; margin-bottom:12px;">
             <option value="true">ENABLED (Solid Green Screen Cutout)</option>
             <option value="false">DISABLED (Transparent Cutout)</option>
@@ -928,22 +941,23 @@ body {
 <div class="modal" id="obsThemeModal">
     <div class="modal-content">
         <h3 style="margin:0 0 8px 0; font-size:16px; color:var(--gold);">📡 OBS OVERLAY THEMES</h3>
-        <label style="font-size:11px; color:#b0c4de;">CHOOSE OVERLAY PALETTE</label>
+        <label style="font-size:11px; color:#b0c4de;">CHOOSE OBS OVERLAY PALETTE</label>
         <select id="tmPresetSelect" onchange="onObsPresetDropdownChange()" style="width:100%; padding:6px; background:#080c12; color:#fff; border:1px solid #1e293b; border-radius:4px; margin-top:4px; margin-bottom:10px; font-size:13px;">
             <option value="Classic Gold">Classic Gold (Golden Glow)</option>
-            <option value="Royal Blue">Royal Blue (Deep Ocean)</option>
-            <option value="Crimson Red">Crimson Red (Aggressive Fire)</option>
-            <option value="Cyber Purple">Cyber Purple (Neon Synthwave)</option>
-            <option value="Neon Cyber">Neon Cyber (Cyan & Magenta)</option>
-            <option value="Sunset Orange">Sunset Orange (Warm Gradient)</option>
-            <option value="Emerald Neon">Emerald Neon (Pro League Green)</option>
-            <option value="Rose Gold">Rose Gold (Pyaara Pink Theme)</option>
+            <option value="Cyber Neon Green">Cyber Neon Green (Pro League)</option>
+            <option value="Phantom Purple">Phantom Purple (Deep Synth)</option>
+            <option value="Toxic Acid">Toxic Acid (High Vis Yellow)</option>
+            <option value="Crimson Fire">Crimson Fire (Aggressive Red)</option>
+            <option value="Frost Blizzard">Frost Blizzard (Ice Blue)</option>
+            <option value="Radiant Amber">Radiant Amber (Warm Sunset)</option>
+            <option value="Hyper Pink">Hyper Pink (Cyberpunk Neon)</option>
+            <option value="Midnight Steel">Midnight Steel (Tactical Slate)</option>
         </select>
 
-        <label style="font-size:11px; color:#b0c4de;">🗺️ MAP NAME COLOR</label>
+        <label style="font-size:11px; color:#b0c4de;">🗺️ MAP NAME COLOR (OVERLAYS)</label>
         <div style="display:flex; align-items:center; gap:8px; margin-top:4px; margin-bottom:14px;">
             <input type="color" id="tmMapColorPicker" style="width:40px; height:32px; background:none; border:1px solid #1e293b; border-radius:4px; cursor:pointer;" value="#ffffff">
-            <span style="font-size:11px; color:#7b8ea6;">Click to choose custom map color</span>
+            <span style="font-size:11px; color:#7b8ea6;">Custom map text color</span>
         </div>
 
         <div style="display:flex; gap:6px;">
@@ -977,17 +991,49 @@ body {
 
 <div id="toast" class="toast">Saved</div>
 
-<!-- HIDDEN LOGO UPLOAD INPUT -->
-<input type="file" id="logoUploadInput" accept="image/png, image/jpeg, image/webp, image/gif" style="display:none" onchange="handleLogoUpload(this)">
-
 <script>
+let currentRoom = new URLSearchParams(window.location.search).get("room") || "DEFAULT";
+document.getElementById("activeRoomInput").value = currentRoom;
+
 let teamsData = [];
 let allThemesData = { matches: {}, admin_theme: "Classic Gold" };
 let builtinPresetsData = {};
 let isSyncing = false;
 let lastKnownHash = "";
 const mySessionId = "usr_" + Math.random().toString(36).substring(2, 9);
-let uploadTeamId = null;
+
+function updateObsLinks() {
+    const r = encodeURIComponent(currentRoom);
+    const obsList = [
+        { name: "⏳ STARTING", url: `/overlay/starting?room=${r}`, style: "color:var(--cyan); border-color:rgba(0,229,255,0.4);" },
+        { name: "🎙️ CASTER DESK", url: `/overlay/caster?room=${r}`, style: "color:var(--gold); border-color:rgba(242,196,0,0.4);" },
+        { name: "📊 LIVE PT", url: `/overlay/pt?room=${r}`, style: "" },
+        { name: "🗺️ MINI-MAP PiP", url: `/overlay/mapgame?room=${r}`, style: "" },
+        { name: "⚔️ DUAL POV", url: `/overlay/dualpov?room=${r}`, style: "color:#ff7700;" },
+        { name: "🏆 STANDINGS", url: `/overlay/standings?room=${r}`, style: "color:var(--gold);" },
+        { name: "💀 ELIM CARD", url: `/overlay/elimination?room=${r}`, style: "color:var(--red);" },
+        { name: "🍗 WWCD", url: `/overlay/wwcd?room=${r}`, style: "color:var(--gold);" },
+        { name: "☕ BRB BREAK", url: `/overlay/brb?room=${r}`, style: "" },
+        { name: "🏁 ENDING", url: `/overlay/ending?room=${r}`, style: "color:#c084fc;" }
+    ];
+    let h = "";
+    obsList.forEach(item => {
+        h += `<a href="${item.url}" target="_blank" class="obs-badge" style="${item.style}">${item.name}</a>`;
+    });
+    document.getElementById("obsStrip").innerHTML = h;
+}
+
+function switchRoom() {
+    const newRoom = document.getElementById("activeRoomInput").value.trim().toUpperCase() || "DEFAULT";
+    window.location.search = `?room=${encodeURIComponent(newRoom)}`;
+}
+
+function onCasterCountChange() {
+    const c = parseInt(document.getElementById("stCasterCount").value) || 2;
+    document.getElementById("cBox1").style.display = c >= 1 ? "block" : "none";
+    document.getElementById("cBox2").style.display = c >= 2 ? "block" : "none";
+    document.getElementById("cBox3").style.display = c >= 3 ? "block" : "none";
+}
 
 function applyAdminTheme(paletteName) {
     const t = builtinPresetsData[paletteName] || builtinPresetsData["Classic Gold"];
@@ -1000,7 +1046,7 @@ function applyAdminTheme(paletteName) {
 
 async function pingHeartbeat() {
     try {
-        const res = await fetch("/api/ping?cid=" + mySessionId);
+        const res = await fetch(`/api/ping?room=${encodeURIComponent(currentRoom)}&cid=${mySessionId}`);
         if(res.ok) {
             const data = await res.json();
             const count = data.users || 1;
@@ -1013,17 +1059,24 @@ pingHeartbeat();
 
 async function loadConfigData() {
     try {
-        const [cRes, thmRes] = await Promise.all([fetch("/api/config"), fetch("/api/themes")]);
+        const [cRes, thmRes] = await Promise.all([
+            fetch(`/api/config?room=${encodeURIComponent(currentRoom)}`),
+            fetch(`/api/themes?room=${encodeURIComponent(currentRoom)}`)
+        ]);
         if(cRes.ok) {
             const cfg = await cRes.json();
             document.getElementById("cfgTourney").value = cfg.tournament || "ESPORTS NATION INDIA";
             document.getElementById("cfgMatch").value = cfg.match || "MATCH 1";
             document.getElementById("cfgMap").value = cfg.map || "ERANGEL";
             
+            document.getElementById("stCasterCount").value = cfg.caster_count || 2;
             document.getElementById("stCaster1").value = cfg.caster1_name || "CASTER ALPHA";
             document.getElementById("stRole1").value = cfg.caster1_title || "PLAY-BY-PLAY";
             document.getElementById("stCaster2").value = cfg.caster2_name || "ANALYST BRAVO";
             document.getElementById("stRole2").value = cfg.caster2_title || "COLOR COMMENTARY";
+            document.getElementById("stCaster3").value = cfg.caster3_name || "SPECIAL GUEST";
+            document.getElementById("stRole3").value = cfg.caster3_title || "EXPERT ANALYST";
+            
             document.getElementById("stTimerMin").value = cfg.start_timer_min || "5";
             document.getElementById("stHeadline").value = cfg.broadcast_headline || "GRAND FINALS - DAY 1";
             document.getElementById("stChromaKey").value = String(cfg.chroma_key_mode !== false);
@@ -1033,6 +1086,8 @@ async function loadConfigData() {
             document.getElementById("stDual1Sub").value = cfg.dual_team1_sub || "POV 1";
             document.getElementById("stDual2Name").value = cfg.dual_team2_name || "";
             document.getElementById("stDual2Sub").value = cfg.dual_team2_sub || "POV 2";
+            
+            onCasterCountChange();
         }
         if(thmRes.ok) {
             const thmData = await thmRes.json();
@@ -1045,6 +1100,7 @@ async function loadConfigData() {
 
 async function saveConfigData() {
     const payload = {
+        room: currentRoom,
         tournament: document.getElementById("cfgTourney").value,
         match: document.getElementById("cfgMatch").value,
         map: document.getElementById("cfgMap").value
@@ -1059,10 +1115,14 @@ async function saveConfigData() {
 
 async function saveStudioData() {
     const payload = {
+        room: currentRoom,
+        caster_count: parseInt(document.getElementById("stCasterCount").value) || 2,
         caster1_name: document.getElementById("stCaster1").value,
         caster1_title: document.getElementById("stRole1").value,
         caster2_name: document.getElementById("stCaster2").value,
         caster2_title: document.getElementById("stRole2").value,
+        caster3_name: document.getElementById("stCaster3").value,
+        caster3_title: document.getElementById("stRole3").value,
         start_timer_min: document.getElementById("stTimerMin").value,
         broadcast_headline: document.getElementById("stHeadline").value,
         chroma_key_mode: document.getElementById("stChromaKey").value === "true",
@@ -1085,7 +1145,7 @@ async function syncAdminData() {
     if(isSyncing) return;
     isSyncing = true;
     try {
-        const res = await fetch("/api/teams?t=" + Date.now());
+        const res = await fetch(`/api/teams?room=${encodeURIComponent(currentRoom)}&t=${Date.now()}`);
         if (!res.ok) return;
         const freshData = await res.json();
         
@@ -1134,15 +1194,6 @@ async function syncAdminData() {
                         absBtn.innerText = "PRE";
                     }
                 }
-                
-                // Update logo visually if changed
-                const logoImg = row.querySelector('.admin-t-logo');
-                if(logoImg) {
-                    const expectedSrc = team.logo || 'https://dummyimage.com/40x40/111823/f2c400&text=+';
-                    if(!logoImg.src.includes(expectedSrc) && !expectedSrc.includes('dummyimage')) {
-                        logoImg.src = expectedSrc;
-                    }
-                }
 
                 if(team.absent) row.className = "t-row absent-mode searchable";
                 else if(isWinner) row.className = "t-row winner searchable";
@@ -1176,14 +1227,11 @@ function renderAllTeams() {
         for(let i = 1; i <= totalCount; i++) {
             posOpts += `<option value="${i}" ${team.position==i?'selected':''}>#${i}</option>`;
         }
-        
-        const logoSrc = team.logo ? team.logo : 'https://dummyimage.com/40x40/111823/f2c400&text=+';
 
         html += `
             <div id="row-${team.id}" class="t-row searchable ${team.absent ? 'absent-mode' : (team.position === 1 ? 'winner' : (isDead ? 'eliminated' : ''))}" data-name="${(team.name || '').toLowerCase()}">
                 <div class="slot-num">#${team.id}</div>
                 <div class="t-main-info">
-                    <img class="admin-t-logo" src="${logoSrc}" onclick="triggerLogoUpload(${team.id})" title="Click to change logo">
                     <span class="t-name">${team.name}</span>
                     <select class="sel-pcount" onchange="uiSetPlayerCount(${team.id}, this.value)">
                         <option value="4" ${pCount==4?'selected':''}>4P</option>
@@ -1215,33 +1263,6 @@ function filterTeams() {
     });
 }
 
-function triggerLogoUpload(id) {
-    uploadTeamId = id;
-    document.getElementById("logoUploadInput").click();
-}
-
-async function handleLogoUpload(input) {
-    if(!input.files || !input.files[0] || !uploadTeamId) return;
-    const formData = new FormData();
-    formData.append("logo", input.files[0]);
-    formData.append("id", uploadTeamId);
-
-    try {
-        showToast("Uploading Logo...");
-        const res = await fetch("/api/upload_logo", { method: "POST", body: formData });
-        const d = await res.json();
-        if(d.success) {
-            showToast("Logo updated! ✅");
-            loadTeams();
-        } else {
-            alert(d.error || "Upload failed");
-        }
-    } catch(e) {
-        alert("Upload error. Check connection.");
-    }
-    input.value = ""; 
-}
-
 function toggleMenu() { 
     document.getElementById("sidebarMenu").classList.toggle("open"); 
     document.getElementById("sidebarOverlay").classList.toggle("show"); 
@@ -1252,7 +1273,7 @@ function openStudioModal() { document.getElementById("studioModal").classList.ad
 
 async function openObsThemeModal() {
     document.getElementById("obsThemeModal").classList.add("show");
-    const thmRes = await fetch("/api/themes");
+    const thmRes = await fetch(`/api/themes?room=${encodeURIComponent(currentRoom)}`);
     const thmJson = await thmRes.json();
     allThemesData = thmJson.themes || { matches: {} };
     builtinPresetsData = thmJson.presets || {};
@@ -1285,7 +1306,7 @@ async function saveObsTheme() {
     await fetch("/api/themes", { 
         method: "POST", 
         headers: {"Content-Type": "application/json"}, 
-        body: JSON.stringify({ match_key: curMatch, theme: themeObj }) 
+        body: JSON.stringify({ room: currentRoom, match_key: curMatch, theme: themeObj }) 
     });
     showToast(`Overlay Theme & Map Color Saved!`);
     closeModal('obsThemeModal');
@@ -1293,7 +1314,7 @@ async function saveObsTheme() {
 
 async function openAdminThemeModal() {
     document.getElementById("adminThemeModal").classList.add("show");
-    const thmRes = await fetch("/api/themes");
+    const thmRes = await fetch(`/api/themes?room=${encodeURIComponent(currentRoom)}`);
     const thmJson = await thmRes.json();
     allThemesData = thmJson.themes || { matches: {}, admin_theme: "Classic Gold" };
     builtinPresetsData = thmJson.presets || {};
@@ -1313,7 +1334,7 @@ async function saveAdminTheme() {
     await fetch("/api/themes", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({ admin_theme: chosen })
+        body: JSON.stringify({ room: currentRoom, admin_theme: chosen })
     });
     showToast(`Admin Theme Applied!`);
     closeModal('adminThemeModal');
@@ -1328,7 +1349,7 @@ function showToast(msg) {
 
 async function loadTeams() { 
     try {
-        const res = await fetch("/api/teams?t=" + Date.now()); 
+        const res = await fetch(`/api/teams?room=${encodeURIComponent(currentRoom)}&t=${Date.now()}`); 
         if(res.ok) {
             teamsData = await res.json(); 
             lastKnownHash = JSON.stringify(teamsData);
@@ -1345,7 +1366,7 @@ function fastChangeKills(id, amt) {
         let cur = parseInt(kElem.innerText) || 0;
         kElem.innerText = Math.max(0, cur + amt);
     }
-    fetch("/api/update", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({id, kills_change: amt}) });
+    fetch("/api/update", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({room: currentRoom, id, kills_change: amt}) });
 }
 
 function fastTogglePlayer(id, idx) {
@@ -1355,7 +1376,7 @@ function fastTogglePlayer(id, idx) {
     }
     const dot = document.getElementById(`dot-${id}-${idx}`);
     if(dot) dot.classList.toggle("dead");
-    fetch("/api/update", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({id, player: idx}) });
+    fetch("/api/update", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({room: currentRoom, id, player: idx}) });
 }
 
 function fastEliminate(id) {
@@ -1369,7 +1390,7 @@ function fastEliminate(id) {
     }
     const row = document.getElementById(`row-${id}`);
     if(row) row.classList.add("eliminated");
-    fetch("/api/eliminate", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({id}) });
+    fetch("/api/eliminate", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({room: currentRoom, id}) });
 }
 
 async function fastToggleAbsent(id) {
@@ -1399,7 +1420,7 @@ async function fastToggleAbsent(id) {
         const res = await fetch("/api/toggle_absent", { 
             method: "POST", 
             headers: {"Content-Type": "application/json"}, 
-            body: JSON.stringify({id: id}) 
+            body: JSON.stringify({room: currentRoom, id: id}) 
         });
         const d = await res.json();
         if(d.success && d.absent !== undefined) {
@@ -1411,45 +1432,45 @@ async function fastToggleAbsent(id) {
 function uiUpdatePos(id, pos) { 
     const tm = teamsData.find(x => String(x.id) === String(id));
     if(tm) tm.position = parseInt(pos) || 0;
-    fetch("/api/update", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({id, position: parseInt(pos)||0}) }); 
+    fetch("/api/update", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({room: currentRoom, id, position: parseInt(pos)||0}) }); 
 }
 
 function uiSetPlayerCount(id, count) { 
-    fetch("/api/update", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({id, player_count: count}) }).then(loadTeams); 
+    fetch("/api/update", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({room: currentRoom, id, player_count: count}) }).then(loadTeams); 
 }
 
-async function uiUndo() { await fetch("/api/undo", { method: "POST" }); loadTeams(); showToast("Undo ↩"); }
-async function uiRedo() { await fetch("/api/redo", { method: "POST" }); loadTeams(); showToast("Redo ↪"); }
+async function uiUndo() { await fetch("/api/undo", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({room: currentRoom}) }); loadTeams(); showToast("Undo ↩"); }
+async function uiRedo() { await fetch("/api/redo", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({room: currentRoom}) }); loadTeams(); showToast("Redo ↪"); }
 
 async function adjustSlots(amount) {
     let count = teamsData.length + amount; if(count < 0) count = 0;
-    await fetch("/api/adjust_slots", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({count}) });
+    await fetch("/api/adjust_slots", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({room: currentRoom, count}) });
     loadTeams();
 }
 
 async function deleteAllSlots() {
     if(!confirm("Clear all slots?")) return;
-    await fetch("/api/create", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({count: 0}) });
+    await fetch("/api/create", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({room: currentRoom, count: 0}) });
     loadTeams();
     showToast("Slots Cleared!");
 }
 
 async function resetMatchState() { 
     if(!confirm("Reset current match kills/alive?")) return; 
-    await fetch("/api/reset_match", { method: "POST" }); 
+    await fetch("/api/reset_match", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({room: currentRoom}) }); 
     loadTeams(); 
 }
 
 async function uiResetAll() { 
     if(!confirm("Reset ALL tournament data & scores to 0?")) return; 
-    await fetch("/api/reset_all", { method: "POST" }); 
+    await fetch("/api/reset_all", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({room: currentRoom}) }); 
     loadTeams(); 
     showToast("Tournament Reset 0!"); 
 }
 
 async function saveMatchOverall() {
     if(!confirm("Save match to history?")) return;
-    const res = await fetch("/api/save_match_overall", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({}) });
+    const res = await fetch("/api/save_match_overall", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({room: currentRoom}) });
     const d = await res.json();
     if(res.ok) { 
         showToast("Full Match Data Saved! 💾"); 
@@ -1467,13 +1488,13 @@ async function importSlots() {
         let c = line.trim();
         if(c) names.push(c.replace(/^(?:slot\s*#?\d+[\s\-\→\:\.\|]*|\#?\d+[\.\-\)\:\|]+\s*)/i, '').trim());
     });
-    await fetch("/api/import_slots", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({names}) });
+    await fetch("/api/import_slots", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({room: currentRoom, names}) });
     closeModal("slotsModal"); loadTeams(); showToast("Slots Imported (Starts Slot #3)!");
 }
 
 async function openHistoryModal() {
     document.getElementById("historyModal").classList.add("show");
-    const res = await fetch("/api/history"); const hist = await res.json();
+    const res = await fetch(`/api/history?room=${encodeURIComponent(currentRoom)}`); const hist = await res.json();
     const c = document.getElementById("historyListContainer");
     if(!hist.length) { c.innerHTML = "<p style='color:#7b8ea6; text-align:center;'>No saved matches.</p>"; return; }
     
@@ -1482,7 +1503,7 @@ async function openHistoryModal() {
         let rows = "";
         (m.teams || []).sort((a,b)=>(b.total_pts||0)-(a.total_pts||0)).forEach(t => {
             rows += `
-                <tr style="border-bottom:1px solid rgba(255,255,200,0.05); font-size:12px;">
+                <tr style="border-bottom:1px solid rgba(255,255,255,0.05); font-size:12px;">
                     <td style="padding:4px; color:var(--gold);">#${t.position||'-'}</td>
                     <td style="font-weight:700;">${t.name}</td>
                     <td align="center">${t.kills||0}</td>
@@ -1510,8 +1531,9 @@ async function openHistoryModal() {
     c.innerHTML = h;
 }
 
-async function clearMatchHistory() { if(!confirm("Wipe match history?")) return; await fetch("/api/clear_history", { method: "POST" }); loadTeams(); showToast("Wiped!"); }
+async function clearMatchHistory() { if(!confirm("Wipe match history?")) return; await fetch("/api/clear_history", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({room: currentRoom}) }); loadTeams(); showToast("Wiped!"); }
 
+updateObsLinks();
 loadConfigData();
 loadTeams();
 </script>
@@ -1520,10 +1542,9 @@ loadTeams();
 """
 
 # =========================================================
-# OVERLAYS IMPLEMENTATION
+# OVERLAYS (WITH DYNAMIC 1, 2, 3 CASTER DESK GRID)
 # =========================================================
 
-# 1. STREAM STARTING
 STARTING_HTML = (
     r"""<!DOCTYPE html><html><head><meta charset="UTF-8">
 <style>"""
@@ -1561,6 +1582,7 @@ STARTING_HTML = (
 </div>
 
 <script>
+const room = new URLSearchParams(window.location.search).get("room") || "DEFAULT";
 let totalSec = 300;
 let hasCustomTime = false;
 setInterval(() => {
@@ -1573,7 +1595,7 @@ setInterval(() => {
 
 async function loadData() {
     try {
-        const r = await fetch("/api/config?t=" + Date.now());
+        const r = await fetch(`/api/config?room=${encodeURIComponent(room)}&t=${Date.now()}`);
         const d = await r.json();
         document.getElementById("tourney").innerText = d.tournament || "ESPORTS NATION";
         document.getElementById("match").innerText = d.match || "MATCH 1";
@@ -1592,7 +1614,7 @@ loadData(); setInterval(loadData, 3000);
     + "</body></html>"
 )
 
-# 2. CASTER DESK
+# DYNAMIC 1, 2, 3 CASTER DESK WITH VISIBLE LABELS
 CASTER_HTML = (
     r"""<!DOCTYPE html><html><head><meta charset="UTF-8">
 <style>"""
@@ -1604,7 +1626,7 @@ CASTER_HTML = (
     display: flex; 
     flex-direction: column; 
     justify-content: space-between; 
-    padding: 30px 50px 40px 50px; 
+    padding: 30px 40px 40px 40px; 
     z-index: 10; 
     pointer-events: none; 
 }
@@ -1626,23 +1648,39 @@ CASTER_HTML = (
 
 .frames-row { 
     display: grid; 
-    grid-template-columns: 1fr 1fr; 
-    gap: 50px; 
+    gap: 30px; 
     margin-bottom: 20px; 
+    width: 100%;
+}
+
+/* DYNAMIC CASTER GRID LAYOUTS */
+.frames-row.casters-1 {
+    grid-template-columns: 1fr;
+    max-width: 900px;
+    margin: 0 auto 20px auto;
+}
+.frames-row.casters-2 {
+    grid-template-columns: 1fr 1fr;
+    gap: 40px;
+}
+.frames-row.casters-3 {
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 24px;
 }
 
 .cam-window { 
     height: 480px; 
     position: relative; 
-    border: 2px solid rgba(255,255,255,0.2); 
+    border: 2px solid rgba(255,255,255,0.25); 
     border-radius: 12px; 
+    overflow: hidden;
 }
 
 .caster-tag { 
     position: absolute; 
     bottom: 20px;
     left: 20px; 
-    padding: 10px 28px; 
+    padding: 8px 24px; 
     display: flex; 
     align-items: center; 
     gap: 12px; 
@@ -1653,7 +1691,7 @@ CASTER_HTML = (
 
 .caster-name { 
     font-family: 'Teko'; 
-    font-size: 36px; 
+    font-size: 34px; 
     font-weight: 700; 
     color: #ffffff; 
     line-height: 1; 
@@ -1661,7 +1699,7 @@ CASTER_HTML = (
 }
 
 .caster-role { 
-    font-size: 12px; 
+    font-size: 11px; 
     font-weight: 800; 
     color: var(--cyan); 
     letter-spacing: 2px; 
@@ -1675,7 +1713,7 @@ CASTER_HTML = (
         <div style="font-size:14px; font-weight:800; color:var(--cyan); letter-spacing:2px;" id="cMatch">MATCH 1</div>
     </div>
 
-    <div class="frames-row">
+    <div class="frames-row casters-2" id="framesRow">
         <div class="cam-window cyber-card" id="cam1">
             <div class="caster-tag cyber-card">
                 <div><div class="caster-role" id="r1">PLAY-BY-PLAY</div><div class="caster-name" id="c1">CASTER 1</div></div>
@@ -1686,37 +1724,54 @@ CASTER_HTML = (
                 <div><div class="caster-role" id="r2">ANALYST</div><div class="caster-name" id="c2">CASTER 2</div></div>
             </div>
         </div>
+        <div class="cam-window cyber-card" id="cam3" style="display:none;">
+            <div class="caster-tag cyber-card" style="border-left-color:#ff7700;">
+                <div><div class="caster-role" id="r3">EXPERT</div><div class="caster-name" id="c3">CASTER 3</div></div>
+            </div>
+        </div>
     </div>
 </div>
 
 <script>
+const room = new URLSearchParams(window.location.search).get("room") || "DEFAULT";
+
 async function loadCasters() {
     try {
-        const r = await fetch("/api/config?t=" + Date.now());
+        const r = await fetch(`/api/config?room=${encodeURIComponent(room)}&t=${Date.now()}`);
         const d = await r.json();
+        
+        const count = d.caster_count || 2;
+        const row = document.getElementById("framesRow");
+        row.className = `frames-row casters-${count}`;
+        
+        document.getElementById("cam1").style.display = count >= 1 ? "block" : "none";
+        document.getElementById("cam2").style.display = count >= 2 ? "block" : "none";
+        document.getElementById("cam3").style.display = count >= 3 ? "block" : "none";
+
         document.getElementById("c1").innerText = d.caster1_name || "CASTER 1";
         document.getElementById("r1").innerText = d.caster1_title || "PLAY-BY-PLAY";
         document.getElementById("c2").innerText = d.caster2_name || "CASTER 2";
         document.getElementById("r2").innerText = d.caster2_title || "ANALYST";
+        document.getElementById("c3").innerText = d.caster3_name || "CASTER 3";
+        document.getElementById("r3").innerText = d.caster3_title || "EXPERT";
+        
         document.getElementById("cMatch").innerText = (d.tournament || "ESPORTS NATION") + " | " + (d.match || "MATCH 1");
         
-        if(d.chroma_key_mode) {
-            document.getElementById("cam1").classList.add("chroma-box");
-            document.getElementById("cam2").classList.add("chroma-box");
-        } else {
-            document.getElementById("cam1").classList.remove("chroma-box");
-            document.getElementById("cam2").classList.remove("chroma-box");
-        }
+        const cams = ["cam1", "cam2", "cam3"];
+        cams.forEach(cid => {
+            const el = document.getElementById(cid);
+            if(d.chroma_key_mode) el.classList.add("chroma-box");
+            else el.classList.remove("chroma-box");
+        });
     }catch(e){}
 }
-loadCasters(); setInterval(loadCasters, 2500);
+loadCasters(); setInterval(loadCasters, 2000);
 </script>
 """
     + THEME_ENGINE_JS
     + "</body></html>"
 )
 
-# 3. DUAL POV (CUSTOM NAMES & AUTOSYNC)
 DUALPOV_HTML = (
     r"""<!DOCTYPE html><html><head><meta charset="UTF-8">
 <style>"""
@@ -1805,11 +1860,13 @@ DUALPOV_HTML = (
     </div>
 </div>
 <script>
+const room = new URLSearchParams(window.location.search).get("room") || "DEFAULT";
+
 async function loadDual() {
     try {
         const [cRes, tRes] = await Promise.all([
-            fetch("/api/config?t=" + Date.now()), 
-            fetch("/api/teams?t=" + Date.now())
+            fetch(`/api/config?room=${encodeURIComponent(room)}&t=${Date.now()}`), 
+            fetch(`/api/teams?room=${encodeURIComponent(room)}&t=${Date.now()}`)
         ]);
         const cfg = await cRes.json();
         const d = await tRes.json();
@@ -1853,7 +1910,7 @@ loadDual(); setInterval(loadDual, 1500);
     + "</body></html>"
 )
 
-# 4. MINI-MAP PiP (CLEAN MAP FEED WITH CHROMA KEY GREEN SCREEN ENABLED)
+# MINI-MAP PiP (CHROMA KEY GREEN SCREEN + NO RADAR SWEEP)
 MAPGAME_HTML = (
     r"""<!DOCTYPE html><html><head><meta charset="UTF-8">
 <style>"""
@@ -1905,9 +1962,11 @@ MAPGAME_HTML = (
     </div>
 </div>
 <script>
+const room = new URLSearchParams(window.location.search).get("room") || "DEFAULT";
+
 async function loadMapHUD() {
     try {
-        const r = await fetch("/api/config?t=" + Date.now());
+        const r = await fetch(`/api/config?room=${encodeURIComponent(room)}&t=${Date.now()}`);
         const d = await r.json();
         document.getElementById("mapName").innerText = d.map || "ERANGEL";
         const box = document.getElementById("mapBox");
@@ -1917,7 +1976,6 @@ async function loadMapHUD() {
         else if(d.map_position === "top-right") box.classList.add("pos-top-right");
         else box.classList.add("pos-bottom-right");
 
-        // Chroma Green Screen Mode Active
         if(d.chroma_key_mode !== false) {
             box.classList.add("chroma-box");
         } else {
@@ -1932,7 +1990,6 @@ loadMapHUD(); setInterval(loadMapHUD, 2000);
     + "</body></html>"
 )
 
-# 5. BE RIGHT BACK
 BRB_HTML = (
     r"""<!DOCTYPE html><html><head><meta charset="UTF-8">
 <style>"""
@@ -1953,7 +2010,7 @@ BRB_HTML = (
     <div class="hero-text">
         <div class="status-pill"><div class="pulse-circle"></div> TACTICAL BREAK</div>
         <h1>BE RIGHT<br><span style="color:var(--gold);">BACK</span></h1>
-        <p style="color:#8fa0b5; font-size:18px; font-weight:700; letter-spacing:2px; margin-top:15px;" id="brbHeadline">NEXT ROUND COMMENCING SHORTLY</p>
+        <p style="color:#8fa0b5; font-size:18px; font-weight:700; letter-spacing:2px;" id="brbHeadline">NEXT ROUND COMMENCING SHORTLY</p>
     </div>
 
     <div class="side-board cyber-card">
@@ -1963,9 +2020,14 @@ BRB_HTML = (
 </div>
 
 <script>
+const room = new URLSearchParams(window.location.search).get("room") || "DEFAULT";
+
 async function loadBRB() {
     try {
-        const [cRes, tRes] = await Promise.all([fetch("/api/config?t=" + Date.now()), fetch("/api/teams?t=" + Date.now())]);
+        const [cRes, tRes] = await Promise.all([
+            fetch(`/api/config?room=${encodeURIComponent(room)}&t=${Date.now()}`), 
+            fetch(`/api/teams?room=${encodeURIComponent(room)}&t=${Date.now()}`)
+        ]);
         const cfg = await cRes.json();
         const d = await tRes.json();
         document.getElementById("brbHeadline").innerText = cfg.broadcast_headline || "NEXT ROUND COMMENCING SHORTLY";
@@ -1988,7 +2050,6 @@ loadBRB(); setInterval(loadBRB, 3000);
     + "</body></html>"
 )
 
-# 6. STREAM ENDING
 ENDING_HTML = (
     r"""<!DOCTYPE html><html><head><meta charset="UTF-8">
 <style>"""
@@ -2013,9 +2074,11 @@ ENDING_HTML = (
     </div>
 </div>
 <script>
+const room = new URLSearchParams(window.location.search).get("room") || "DEFAULT";
+
 async function loadEnd() {
     try {
-        const r = await fetch("/api/config?t=" + Date.now());
+        const r = await fetch(`/api/config?room=${encodeURIComponent(room)}&t=${Date.now()}`);
         const d = await r.json();
         document.getElementById("sDisc").innerText = "🎮 DISCORD: " + (d.discord_tag || "esportsindia");
         document.getElementById("sInsta").innerText = "📷 INSTA: " + (d.insta_tag || "@esportsnation.india");
@@ -2029,14 +2092,14 @@ loadEnd();
     + "</body></html>"
 )
 
-# MATCH HUD OVERLAYS
 PT_HTML = (
     r"""<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@600;700;800&family=Teko:wght@600;700&display=swap');*{box-sizing:border-box;}html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:transparent;font-family:'Rajdhani',sans-serif;}#pt{position:fixed;top:40px;right:15px;width:295px;color:white;box-shadow:0 12px 35px rgba(0,0,0,0.8);border-radius:6px;overflow:hidden;background:#061326;animation:fadeInPT 0.8s ease;}@keyframes fadeInPT{from{opacity:0;transform:translateY(-15px);}to{opacity:1;transform:translateY(0);}}.top-status-bar{display:flex;justify-content:space-between;align-items:center;background:#061326;border-top:3px solid #f2c400;padding:5px 10px;font-size:11px;font-weight:800;}.header{height:26px;display:grid;grid-template-columns:36px 1fr 48px 34px 36px;align-items:center;background:#f2c400;color:#050b14;font-weight:800;font-size:11px;padding:0 6px;}.row{height:28px;display:grid;grid-template-columns:36px 1fr 48px 34px 36px;align-items:center;background:rgb(6,20,39);border-bottom:1px solid rgba(255,255,255,0.08);padding:0 6px;transition:all 0.3s ease;}.row.eliminated-row{background:rgba(45, 10, 16, 0.95) !important;border-left:3px solid #ff2a55;}.row.absent-row{opacity:0.35;filter:grayscale(1);background:#080d14 !important;}.rank-cell{text-align:center;color:#f2c400;font-weight:800;font-size:11px;}.team-name-area{padding-left:4px;font-size:12px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:6px;}.team-logo{width:17px;height:17px;object-fit:contain;border-radius:2px;flex-shrink:0;}.players{display:flex;justify-content:center;gap:3px;align-items:center;}.player{width:5px;height:14px;background:#00ff66;}.player.dead{background:#ff2a55;}.kills{text-align:center;color:#00e5ff;font-weight:700;}.pts{text-align:center;color:#f2c400;font-weight:800;background:rgba(242,196,0,0.1);height:100%;display:flex;align-items:center;justify-content:center;}</style></head><body><div id="pt"><div class="top-status-bar"><span>TEAMS <strong id="t">0</strong></span><span>ALIVE <strong id="p">0</strong></span></div><div class="header"><div>#</div><div>TEAM</div><div>ALIVE</div><div>FIN</div><div>PTS</div></div><div id="r"></div></div>
 <script>
+const room = new URLSearchParams(window.location.search).get("room") || "DEFAULT";
 let prevRanks={};
 async function l(){
     try{
-        const res=await fetch("/api/teams?t=" + Date.now()); const data=await res.json();
+        const res=await fetch(`/api/teams?room=${encodeURIComponent(room)}&t=${Date.now()}`); const data=await res.json();
         let at=0, ap=0;
         data.forEach(t=>{if(!t.absent){let a=t.players.filter(p=>p===1).length;if(a>0)at++;ap+=a;}});
         document.getElementById("t").innerText=at; document.getElementById("p").innerText=ap;
@@ -2092,9 +2155,15 @@ l();setInterval(l,1000);
 STANDINGS_HTML = (
     r"""<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@600;700;800&family=Teko:wght@600;700&display=swap');*{box-sizing:border-box;}html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:radial-gradient(circle at center, rgb(10,28,54) 0%, rgb(3,8,17) 100%);font-family:'Rajdhani',sans-serif;color:white;}.board-wrapper{max-width:1340px;margin:30px auto;padding:0 20px;animation:fadeInBoard 0.8s ease;}@keyframes fadeInBoard{from{opacity:0;}to{opacity:1;}}.board-header{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:3px solid #f2c400;padding-bottom:10px;margin-bottom:20px;}.bh-title{font-family:'Teko',sans-serif;font-size:46px;color:#f2c400;letter-spacing:2px;text-transform:uppercase;line-height:1;}.bh-sub{font-size:15px;font-weight:800;color:#00e5ff;letter-spacing:3px;}.standings-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px 25px;}.st-table{width:100%;border-collapse:separate;border-spacing:0 6px;}.st-head{background:#f2c400;color:#040811;font-weight:800;font-size:12px;}.st-head th{padding:7px 8px;text-align:center;}.st-head th:nth-child(2){text-align:left;}.st-row{background:rgb(9,28,54);}.st-row.top1{background:rgb(36,31,10);outline:1px solid #f2c400;}.st-row td{padding:7px 8px;text-align:center;font-weight:800;font-size:15px;}.st-row td:first-child{color:#f2c400;width:75px;}.st-team{display:flex;align-items:center;gap:8px;text-align:left;}.st-logo{width:24px;height:24px;object-fit:contain;border-radius:4px;}.st-pts{color:#f2c400;font-size:17px;background:rgba(242,196,0,0.12);}.jump-up{color:#00ff66;font-size:11px;font-weight:800;margin-left:3px;}.jump-down{color:#ff2a55;font-size:11px;font-weight:800;margin-left:3px;}.jump-none{color:#64748b;font-size:11px;margin-left:3px;}</style></head><body><div class="board-wrapper"><div class="board-header"><div><div class="bh-sub" id="stTourney">ESPORTS NATION INDIA</div><div class="bh-title">OVERALL STANDINGS</div></div><div class="bh-title" style="font-size:32px;">LEADERBOARD</div></div><div class="standings-grid"><table class="st-table"><thead><tr class="st-head"><th>#</th><th>TEAM</th><th>M</th><th>WWCD</th><th>KILLS</th><th>PLACE</th><th>TOTAL</th></tr></thead><tbody id="colLeft"></tbody></table><table class="st-table"><thead><tr class="st-head"><th>#</th><th>TEAM</th><th>M</th><th>WWCD</th><th>KILLS</th><th>PLACE</th><th>TOTAL</th></tr></thead><tbody id="colRight"></tbody></table></div></div>
 <script>
+const room = new URLSearchParams(window.location.search).get("room") || "DEFAULT";
+
 async function loadSt(){
     try{
-        const [cRes, tRes, hRes]=await Promise.all([fetch("/api/config?t=" + Date.now()),fetch("/api/teams?t=" + Date.now()),fetch("/api/history?t=" + Date.now())]);
+        const [cRes, tRes, hRes]=await Promise.all([
+            fetch(`/api/config?room=${encodeURIComponent(room)}&t=${Date.now()}`),
+            fetch(`/api/teams?room=${encodeURIComponent(room)}&t=${Date.now()}`),
+            fetch(`/api/history?room=${encodeURIComponent(room)}&t=${Date.now()}`)
+        ]);
         const cfg=await cRes.json(); const data=await tRes.json(); const history=await hRes.json();
         document.getElementById("stTourney").innerText=cfg.tournament||"ESPORTS NATION INDIA";
         
@@ -2153,10 +2222,12 @@ loadSt(); setInterval(loadSt,2000);
 ELIM_HTML = (
     r"""<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@700;800&family=Teko:wght@600;700&display=swap');*{box-sizing:border-box;}html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:transparent;font-family:'Rajdhani',sans-serif;}#elimination{position:fixed;left:50%;top:16%;width:420px;transform:translate(-50%,-50%) scale(0.85);opacity:0;pointer-events:none;background:linear-gradient(135deg, rgb(6,20,39), rgb(14,34,60));border:1px solid rgba(255,46,77,0.55);border-top:4px solid #ff2e4d;border-radius:12px;padding:16px 22px;text-align:center;box-shadow:0 18px 50px rgba(0,0,0,0.8);z-index:999;}#elimination.show{animation:elimShow 3.8s cubic-bezier(0.16,1,0.3,1) forwards;}@keyframes elimShow{0%{opacity:0;transform:translate(-50%,-70%) scale(0.7);}15%{opacity:1;transform:translate(-50%,-50%) scale(1);}85%{opacity:1;transform:translate(-50%,-50%) scale(1);}100%{opacity:0;transform:translate(-50%,-35%) scale(0.85);}}.elim-banner{display:inline-block;background:rgba(255,46,77,0.2);color:#ff4d6d;font-size:11px;font-weight:800;letter-spacing:3px;padding:3px 12px;border-radius:4px;margin-bottom:8px;}.elim-team-row{display:flex;align-items:center;justify-content:center;gap:14px;margin-bottom:14px;}.elim-logo{width:48px;height:48px;object-fit:contain;border-radius:8px;background:rgba(255,255,255,0.07);padding:4px;}.elim-team{color:#ffffff;font-family:'Teko',sans-serif;font-size:36px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;}.elim-info{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;}.info-box{padding:7px 6px;border:1px solid rgba(255,255,255,0.14);border-radius:8px;background:rgba(0,0,0,0.35);}.info-label{color:#9da9b8;font-size:10px;font-weight:800;}.info-value{color:white;font-size:21px;font-weight:800;}.info-value.gold{color:#f2c400;}.info-value.cyan{color:#00e5ff;}</style></head><body><div id="elimination"><div class="elim-banner">SQUAD ELIMINATED</div><div class="elim-team-row"><img id="elimLogo" class="elim-logo" src="" style="display:none;" onerror="this.style.display='none'"><div class="elim-team" id="elimTeam">TEAM NAME</div></div><div class="elim-info"><div class="info-box"><div class="info-label">RANK</div><div class="info-value gold" id="elimRank">#0</div></div><div class="info-box"><div class="info-label">FINISHES</div><div class="info-value cyan" id="elimKills">0</div></div><div class="info-box"><div class="info-label">TOTAL PTS</div><div class="info-value" id="elimPts">0</div></div></div></div>
 <script>
+const room = new URLSearchParams(window.location.search).get("room") || "DEFAULT";
 let lastState={}, lastTs={}, queue=[], playing=false;
+
 async function check(){
     try{
-        const res=await fetch("/api/teams?t=" + Date.now()); const data=await res.json();
+        const res=await fetch(`/api/teams?room=${encodeURIComponent(room)}&t=${Date.now()}`); const data=await res.json();
         data.forEach(t=>{
             if(t.absent)return;
             let oldA=lastState[t.id], curA=t.players.filter(p=>p===1).length;
@@ -2191,7 +2262,17 @@ setInterval(check,1000);
 MATCH_HTML = (
     r"""<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@700;800&family=Teko:wght@600;700&display=swap');*{box-sizing:border-box;}html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:transparent;font-family:'Rajdhani',sans-serif;}#match-info{position:fixed;bottom:18px;left:18px;min-width:240px;background:linear-gradient(135deg, rgb(6,20,39), rgb(12,34,62));border:1px solid rgba(242,196,0,0.4);border-left:4px solid #f2c400;border-radius:8px;padding:8px 14px;color:white;box-shadow:0 8px 25px rgba(0,0,0,0.65);animation:slideMatch 0.8s ease;}.mi-tourney{font-size:10px;font-weight:800;color:#00e5ff;letter-spacing:1.5px;}.mi-row{display:flex;align-items:baseline;gap:10px;margin-top:2px;}.mi-match{font-family:'Teko',sans-serif;font-size:24px;font-weight:700;color:#f2c400;}.mi-map{font-family:'Teko',sans-serif;font-size:24px;font-weight:700;color:white;}</style></head><body><div id="match-info"><div class="mi-tourney" id="dt">ESPORTS NATION INDIA</div><div class="mi-row"><div class="mi-match" id="dm">MATCH 1</div><div>|</div><div class="mi-map" id="dmap">ERANGEL</div></div></div>
 <script>
-async function c(){try{const res=await fetch("/api/config?t=" + Date.now());const cfg=await res.json();document.getElementById("dt").innerText=cfg.tournament||"ESPORTS NATION INDIA";document.getElementById("dm").innerText=cfg.match||"MATCH 1";document.getElementById("dmap").innerText=cfg.map||"ERANGEL";}catch(e){}}
+const room = new URLSearchParams(window.location.search).get("room") || "DEFAULT";
+
+async function c(){
+    try{
+        const res=await fetch(`/api/config?room=${encodeURIComponent(room)}&t=${Date.now()}`);
+        const cfg=await res.json();
+        document.getElementById("dt").innerText=cfg.tournament||"ESPORTS NATION INDIA";
+        document.getElementById("dm").innerText=cfg.match||"MATCH 1";
+        document.getElementById("dmap").innerText=cfg.map||"ERANGEL";
+    }catch(e){}
+}
 c();setInterval(c,2000);
 </script>
 """
@@ -2202,10 +2283,12 @@ c();setInterval(c,2000);
 WWCD_HTML = (
     r"""<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@700;800&family=Teko:wght@600;700&display=swap');*{box-sizing:border-box;}html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:transparent;font-family:'Rajdhani',sans-serif;}#wwcd-screen{position:fixed;top:0;left:0;width:100vw;height:100vh;background:radial-gradient(circle at center, rgba(16,28,48,0.96) 0%, rgba(3,6,15,0.99) 100%);display:flex;flex-direction:column;align-items:center;justify-content:center;opacity:0;pointer-events:none;z-index:9999;}#wwcd-screen.show{animation:wwcdAnim 10s cubic-bezier(0.16,1,0.3,1) forwards;}@keyframes wwcdAnim{0%{opacity:0;transform:scale(1.15);}10%{opacity:1;transform:scale(1);}90%{opacity:1;transform:scale(1);}100%{opacity:0;transform:scale(0.95);}}.wwcd-badge{border-top:2px solid #f2c400;border-bottom:2px solid #f2c400;color:#f2c400;font-size:24px;font-weight:800;letter-spacing:8px;padding:8px 50px;margin-bottom:20px;text-transform:uppercase;}.wwcd-title{font-family:'Teko',sans-serif;font-size:96px;color:#fff;line-height:0.9;margin:0 0 25px 0;text-transform:uppercase;}.wwcd-title span{color:#f2c400;}.winner-card{background:linear-gradient(135deg,rgb(10,26,48),rgb(5,13,26));border:2px solid #f2c400;border-radius:20px;padding:35px 70px;display:flex;flex-direction:column;align-items:center;min-width:550px;box-shadow:0 25px 70px rgba(0,0,0,0.9);}.winner-logo{width:130px;height:130px;object-fit:contain;border-radius:16px;background:rgba(255,255,255,0.06);padding:12px;border:2px solid rgba(242,196,0,0.6);margin-bottom:18px;}.winner-name{font-family:'Teko',sans-serif;font-size:80px;color:#f2c400;line-height:1;text-transform:uppercase;margin-bottom:25px;text-align:center;}.winner-stats{display:grid;grid-template-columns:1fr 1fr 1fr;gap:25px;width:100%;}.w-stat-box{background:rgba(0,0,0,0.55);border:1px solid rgba(255,255,255,0.12);border-bottom:3px solid #f2c400;border-radius:12px;padding:14px 24px;text-align:center;}.w-stat-label{font-size:13px;color:#9da9b8;font-weight:800;letter-spacing:2px;}.w-stat-val{font-size:38px;font-weight:800;color:#f2c400;line-height:1;}</style></head><body><div id="wwcd-screen"><div class="wwcd-badge">🍗 WINNER WINNER CHICKEN DINNER 🍗</div><h1 class="wwcd-title">MATCH <span>CHAMPIONS</span></h1><div class="winner-card"><img id="wwcdLogo" class="winner-logo" src="" style="display:none;" onerror="this.style.display='none'"><div id="wwcdName" class="winner-name">TEAM NAME</div><div class="winner-stats"><div class="w-stat-box"><div class="w-stat-label">RANK</div><div class="w-stat-val">#1</div></div><div class="w-stat-box"><div class="w-stat-label">FINISHES</div><div id="wwcdKills" class="w-stat-val" style="color:#00e5ff;">0</div></div><div class="w-stat-box"><div class="w-stat-label">PTS</div><div id="wwcdPts" class="w-stat-val">0</div></div></div></div></div>
 <script>
+const room = new URLSearchParams(window.location.search).get("room") || "DEFAULT";
 let prevAlive=null, shown=false;
+
 async function cW(){
     try{
-        const res=await fetch("/api/teams?t=" + Date.now()); const data=await res.json();
+        const res=await fetch(`/api/teams?room=${encodeURIComponent(room)}&t=${Date.now()}`); const data=await res.json();
         const active=data.filter(t=>!t.absent);
         const alive=active.filter(t=>t.players.filter(p=>p===1).length>0);
         let cur=alive.length;
@@ -2232,526 +2315,533 @@ setInterval(cW,1000);
 )
 
 # =========================================================
-# FLASK ROUTE REGISTRATIONS
+# MULTI-TENANT FLASK ROUTES & APIS
 # =========================================================
 
 
 @app.route("/")
 def admin():
-    return render_template_string(ADMIN_HTML)
+  return render_template_string(ADMIN_HTML)
 
 
 @app.route("/overlay/pt")
 def overlay_pt():
-    return render_template_string(PT_HTML)
+  return render_template_string(PT_HTML)
 
 
 @app.route("/overlay/elimination")
 def overlay_elimination():
-    return render_template_string(ELIM_HTML)
+  return render_template_string(ELIM_HTML)
 
 
 @app.route("/overlay/match")
 def overlay_match():
-    return render_template_string(MATCH_HTML)
+  return render_template_string(MATCH_HTML)
 
 
 @app.route("/overlay/standings")
 def overlay_standings():
-    return render_template_string(STANDINGS_HTML)
+  return render_template_string(STANDINGS_HTML)
 
 
 @app.route("/overlay/wwcd")
 def overlay_wwcd():
-    return render_template_string(WWCD_HTML)
+  return render_template_string(WWCD_HTML)
 
 
 @app.route("/overlay/starting")
 def overlay_starting():
-    return render_template_string(STARTING_HTML)
+  return render_template_string(STARTING_HTML)
 
 
 @app.route("/overlay/caster")
 def overlay_caster():
-    return render_template_string(CASTER_HTML)
+  return render_template_string(CASTER_HTML)
 
 
 @app.route("/overlay/dualpov")
 def overlay_dualpov():
-    return render_template_string(DUALPOV_HTML)
+  return render_template_string(DUALPOV_HTML)
 
 
 @app.route("/overlay/mapgame")
 def overlay_mapgame():
-    return render_template_string(MAPGAME_HTML)
+  return render_template_string(MAPGAME_HTML)
 
 
 @app.route("/overlay/brb")
 def overlay_brb():
-    return render_template_string(BRB_HTML)
+  return render_template_string(BRB_HTML)
 
 
 @app.route("/overlay/ending")
 def overlay_ending():
-    return render_template_string(ENDING_HTML)
+  return render_template_string(ENDING_HTML)
 
 
 @app.route("/api/ping")
 def ping():
-    cid = request.args.get("cid", request.remote_addr)
-    now = time.time()
-    connected_users[cid] = now
-    active = sum(1 for ts in connected_users.values() if now - ts < 6)
-    return jsonify({"status": "ok", "users": max(1, active)})
+  room_id = get_room_id()
+  cid = request.args.get("cid", request.remote_addr)
+  now = time.time()
+  room_conns = connected_users.setdefault(room_id, {})
+  room_conns[cid] = now
+  active = sum(1 for ts in room_conns.values() if now - ts < 6)
+  return jsonify({"status": "ok", "users": max(1, active)})
 
 
 @app.route("/api/config", methods=["GET", "POST"])
 def config_api():
-    if request.method == "POST":
-        data = request.get_json(silent=True) or request.form or {}
-        cfg = load_config()
-        for k, v in data.items():
-            cfg[k] = v
-        save_config(cfg)
-        return jsonify({"success": True})
-    return jsonify(load_config())
+  room_id = get_room_id()
+  room_data = load_room_data(room_id)
+  cfg = room_data.setdefault("config", {})
+
+  if request.method == "POST":
+    data = request.get_json(silent=True) or request.form or {}
+    for k, v in data.items():
+      if k != "room":
+        cfg[k] = v
+    save_room_data(room_id, room_data)
+    return jsonify({"success": True})
+
+  return jsonify(cfg)
 
 
 @app.route("/api/themes", methods=["GET", "POST"])
 def api_themes():
-    if request.method == "POST":
-        data = request.get_json(silent=True) or request.form or {}
-        themes_data = load_themes()
-        if "admin_theme" in data:
-            themes_data["admin_theme"] = data["admin_theme"]
-        if "match_key" in data:
-            match_key = data.get("match_key", "MATCH 1").strip().upper()
-            themes_data["matches"][match_key] = data.get("theme", {})
-        save_themes(themes_data)
-        return jsonify({"success": True})
-    return jsonify({"themes": load_themes(), "presets": BUILTIN_PRESETS})
+  room_id = get_room_id()
+  room_data = load_room_data(room_id)
+  themes_data = room_data.setdefault("themes", {})
+
+  if request.method == "POST":
+    data = request.get_json(silent=True) or request.form or {}
+    if "admin_theme" in data:
+      themes_data["admin_theme"] = data["admin_theme"]
+    if "match_key" in data:
+      match_key = data.get("match_key", "MATCH 1").strip().upper()
+      themes_data.setdefault("matches", {})[match_key] = data.get("theme", {})
+    save_room_data(room_id, room_data)
+    return jsonify({"success": True})
+
+  return jsonify({"themes": themes_data, "presets": BUILTIN_PRESETS})
 
 
 @app.route("/api/active_theme")
 def api_active_theme():
-    cfg = load_config()
-    current_match = (cfg.get("match") or "MATCH 1").strip().upper()
-    themes_data = load_themes()
-    active = themes_data.get("matches", {}).get(
-        current_match, BUILTIN_PRESETS["Classic Gold"]
-    )
-    return jsonify({"match": current_match, "theme": active})
+  room_id = get_room_id()
+  room_data = load_room_data(room_id)
+  cfg = room_data.get("config", {})
+  current_match = (cfg.get("match") or "MATCH 1").strip().upper()
+  themes_data = room_data.get("themes", {})
+  active = themes_data.get("matches", {}).get(
+      current_match, BUILTIN_PRESETS["Classic Gold"]
+  )
+  return jsonify({"match": current_match, "theme": active})
 
 
 @app.route("/api/teams")
 def api_teams():
-    return jsonify(load())
+  room_id = get_room_id()
+  room_data = load_room_data(room_id)
+  teams = room_data.get("teams", [])
+  auto_assign_winner_if_one_left(teams)
+  recalculate_all(teams)
+  return jsonify(teams)
 
 
 @app.route("/api/undo", methods=["POST"])
 def api_undo():
-    global undo_stack, redo_stack
-    if undo_stack:
-        current_state = load()
-        redo_stack.append(copy.deepcopy(current_state))
-        previous_state = undo_stack.pop()
-        save(previous_state)
-        return jsonify({"success": True})
-    return jsonify({"success": False})
+  room_id = get_room_id()
+  room_data = load_room_data(room_id)
+  undo_stack = room_data.setdefault("undo_stack", [])
+  redo_stack = room_data.setdefault("redo_stack", [])
+  if undo_stack:
+    redo_stack.append(copy.deepcopy(room_data.get("teams", [])))
+    room_data["teams"] = undo_stack.pop()
+    save_room_data(room_id, room_data)
+    return jsonify({"success": True})
+  return jsonify({"success": False})
 
 
 @app.route("/api/redo", methods=["POST"])
 def api_redo():
-    global undo_stack, redo_stack
-    if redo_stack:
-        current_state = load()
-        undo_stack.append(copy.deepcopy(current_state))
-        next_state = redo_stack.pop()
-        save(next_state)
-        return jsonify({"success": True})
-    return jsonify({"success": False})
+  room_id = get_room_id()
+  room_data = load_room_data(room_id)
+  undo_stack = room_data.setdefault("undo_stack", [])
+  redo_stack = room_data.setdefault("redo_stack", [])
+  if redo_stack:
+    undo_stack.append(copy.deepcopy(room_data.get("teams", [])))
+    room_data["teams"] = redo_stack.pop()
+    save_room_data(room_id, room_data)
+    return jsonify({"success": True})
+  return jsonify({"success": False})
 
 
 @app.route("/api/history")
 def api_history():
-    if not os.path.exists(HISTORY_FILE):
-        return jsonify([])
-    try:
-        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-            c = f.read().strip()
-            return jsonify(json.loads(c)) if c else jsonify([])
-    except Exception:
-        return jsonify([])
+  room_id = get_room_id()
+  room_data = load_room_data(room_id)
+  return jsonify(room_data.get("history", []))
 
 
 @app.route("/api/clear_history", methods=["POST"])
 def clear_history():
-    if os.path.exists(HISTORY_FILE):
-        try:
-            os.remove(HISTORY_FILE)
-        except Exception:
-            pass
-    cfg = load_config()
-    cfg["match"] = "MATCH 1"
-    save_config(cfg)
-    save_state_for_undo()
-    teams = load()
-    for t in teams:
-        t["matches_played"] = 0
-        t["overall_kills"] = 0
-        t["overall_place_pts"] = 0
-        t["overall_pts"] = 0
-        t["wwcd"] = 0
-    save(teams)
-    return jsonify({"success": True})
+  room_id = get_room_id()
+  room_data = load_room_data(room_id)
+  save_state_for_undo(room_data)
+  room_data["history"] = []
+  cfg = room_data.setdefault("config", {})
+  cfg["match"] = "MATCH 1"
+  teams = room_data.get("teams", [])
+  for t in teams:
+    t["matches_played"] = 0
+    t["overall_kills"] = 0
+    t["overall_place_pts"] = 0
+    t["overall_pts"] = 0
+    t["wwcd"] = 0
+  save_room_data(room_id, room_data)
+  return jsonify({"success": True})
 
 
 @app.route("/api/reset_all", methods=["POST"])
 def reset_all():
-    save_state_for_undo()
-    if os.path.exists(HISTORY_FILE):
-        try:
-            os.remove(HISTORY_FILE)
-        except Exception:
-            pass
-    teams = load()
-    for t in teams:
-        t["kills"] = 0
-        t["position"] = 0
-        t["points"] = 0
-        t["placement_points"] = 0
-        t["overall_kills"] = 0
-        t["overall_place_pts"] = 0
-        t["overall_pts"] = 0
-        t["matches_played"] = 0
-        t["wwcd"] = 0
-        t["players"] = [1] * len(t.get("players", [1, 1, 1, 1]))
-        t["elim_ts"] = 0
-        t["match_saved_flag"] = False
-    save(teams)
-    return jsonify({"success": True})
+  room_id = get_room_id()
+  room_data = load_room_data(room_id)
+  save_state_for_undo(room_data)
+  room_data["history"] = []
+  teams = room_data.get("teams", [])
+  for t in teams:
+    t["kills"] = 0
+    t["position"] = 0
+    t["points"] = 0
+    t["placement_points"] = 0
+    t["overall_kills"] = 0
+    t["overall_place_pts"] = 0
+    t["overall_pts"] = 0
+    t["matches_played"] = 0
+    t["wwcd"] = 0
+    t["players"] = [1] * len(t.get("players", [1, 1, 1, 1]))
+    t["elim_ts"] = 0
+    t["match_saved_flag"] = False
+  save_room_data(room_id, room_data)
+  return jsonify({"success": True})
 
 
 @app.route("/api/create", methods=["POST"])
 def create():
-    data = request.get_json(silent=True) or request.form or {}
-    count = int(data.get("count", 0))
-    save_state_for_undo()
-    if count <= 0:
-        save([])
-        return jsonify({"success": True})
-    teams = []
-    for i in range(3, count + 3):
-        teams.append({
-            "id": i,
-            "name": f"TEAM {i}",
-            "logo": "",
-            "kills": 0,
-            "position": 0,
-            "points": 0,
-            "placement_points": 0,
-            "overall_kills": 0,
-            "overall_place_pts": 0,
-            "overall_pts": 0,
-            "matches_played": 0,
-            "wwcd": 0,
-            "absent": False,
-            "players": [1, 1, 1, 1],
-            "elim_ts": 0,
-        })
-    save(teams)
+  room_id = get_room_id()
+  data = request.get_json(silent=True) or request.form or {}
+  count = int(data.get("count", 0))
+  room_data = load_room_data(room_id)
+  save_state_for_undo(room_data)
+
+  if count <= 0:
+    room_data["teams"] = []
+    save_room_data(room_id, room_data)
     return jsonify({"success": True})
+
+  teams = []
+  for i in range(3, count + 3):
+    teams.append({
+        "id": i,
+        "name": f"TEAM {i}",
+        "logo": "",
+        "kills": 0,
+        "position": 0,
+        "points": 0,
+        "placement_points": 0,
+        "overall_kills": 0,
+        "overall_place_pts": 0,
+        "overall_pts": 0,
+        "matches_played": 0,
+        "wwcd": 0,
+        "absent": False,
+        "players": [1, 1, 1, 1],
+        "elim_ts": 0,
+    })
+  room_data["teams"] = teams
+  save_room_data(room_id, room_data)
+  return jsonify({"success": True})
 
 
 @app.route("/api/import_slots", methods=["POST"])
 def import_slots():
-    data = request.get_json(silent=True) or request.form or {}
-    names = data.get("names", [])
-    if not names:
-        return jsonify({"success": False})
-    save_state_for_undo()
-    existing_teams = load()
-    logo_map = {t["name"].upper(): t.get("logo", "") for t in existing_teams}
-    teams = []
-    for i, name in enumerate(names, start=3):
-        teams.append({
-            "id": i,
-            "name": name,
-            "logo": logo_map.get(name.upper(), ""),
-            "kills": 0,
-            "position": 0,
-            "points": 0,
-            "placement_points": 0,
-            "overall_kills": 0,
-            "overall_place_pts": 0,
-            "overall_pts": 0,
-            "matches_played": 0,
-            "wwcd": 0,
-            "absent": False,
-            "players": [1, 1, 1, 1],
-            "elim_ts": 0,
-        })
-    save(teams)
-    return jsonify({"success": True})
+  room_id = get_room_id()
+  data = request.get_json(silent=True) or request.form or {}
+  names = data.get("names", [])
+  if not names:
+    return jsonify({"success": False})
+
+  room_data = load_room_data(room_id)
+  save_state_for_undo(room_data)
+  existing = room_data.get("teams", [])
+  logo_map = {t["name"].upper(): t.get("logo", "") for t in existing}
+
+  teams = []
+  for i, name in enumerate(names, start=3):
+    teams.append({
+        "id": i,
+        "name": name,
+        "logo": logo_map.get(name.upper(), ""),
+        "kills": 0,
+        "position": 0,
+        "points": 0,
+        "placement_points": 0,
+        "overall_kills": 0,
+        "overall_place_pts": 0,
+        "overall_pts": 0,
+        "matches_played": 0,
+        "wwcd": 0,
+        "absent": False,
+        "players": [1, 1, 1, 1],
+        "elim_ts": 0,
+    })
+  room_data["teams"] = teams
+  save_room_data(room_id, room_data)
+  return jsonify({"success": True})
 
 
 @app.route("/api/adjust_slots", methods=["POST"])
 def adjust_slots():
-    data = request.get_json(silent=True) or request.form or {}
-    new_count = int(data.get("count", 0))
-    new_count = max(0, min(new_count, 50))
-    save_state_for_undo()
-    teams = load()
-    current_count = len(teams)
-    if new_count > current_count:
-        max_id = max([t["id"] for t in teams]) if teams else 2
-        for _ in range(current_count, new_count):
-            max_id += 1
-            teams.append({
-                "id": max_id,
-                "name": f"TEAM {max_id}",
-                "logo": "",
-                "kills": 0,
-                "position": 0,
-                "points": 0,
-                "placement_points": 0,
-                "overall_kills": 0,
-                "overall_place_pts": 0,
-                "overall_pts": 0,
-                "matches_played": 0,
-                "wwcd": 0,
-                "absent": False,
-                "players": [1, 1, 1, 1],
-                "elim_ts": 0,
-            })
-    elif new_count < current_count:
-        teams = teams[:new_count]
-    save(teams)
-    return jsonify({"success": True})
+  room_id = get_room_id()
+  data = request.get_json(silent=True) or request.form or {}
+  new_count = max(0, min(int(data.get("count", 0)), 50))
+  room_data = load_room_data(room_id)
+  save_state_for_undo(room_data)
+
+  teams = room_data.setdefault("teams", [])
+  cur = len(teams)
+  if new_count > cur:
+    max_id = max([t["id"] for t in teams]) if teams else 2
+    for _ in range(cur, new_count):
+      max_id += 1
+      teams.append({
+          "id": max_id,
+          "name": f"TEAM {max_id}",
+          "logo": "",
+          "kills": 0,
+          "position": 0,
+          "points": 0,
+          "placement_points": 0,
+          "overall_kills": 0,
+          "overall_place_pts": 0,
+          "overall_pts": 0,
+          "matches_played": 0,
+          "wwcd": 0,
+          "absent": False,
+          "players": [1, 1, 1, 1],
+          "elim_ts": 0,
+      })
+  elif new_count < cur:
+    teams = teams[:new_count]
+  room_data["teams"] = teams
+  save_room_data(room_id, room_data)
+  return jsonify({"success": True})
 
 
 @app.route("/api/toggle_absent", methods=["POST"])
 def toggle_absent():
-    data = request.get_json(silent=True) or request.form or {}
-    save_state_for_undo()
-    target_id = str(data.get("id", "")).strip()
-    teams = load()
-    new_state = False
-    found = False
-    for team in teams:
-        if str(team.get("id", "")).strip() == target_id:
-            team["absent"] = not team.get("absent", False)
-            new_state = team["absent"]
-            found = True
-            break
-    if found:
-        save(teams)
-    return jsonify({"success": found, "id": target_id, "absent": new_state})
+  room_id = get_room_id()
+  data = request.get_json(silent=True) or request.form or {}
+  target_id = str(data.get("id", "")).strip()
+
+  room_data = load_room_data(room_id)
+  save_state_for_undo(room_data)
+  teams = room_data.get("teams", [])
+
+  found = False
+  new_state = False
+  for team in teams:
+    if str(team.get("id", "")).strip() == target_id:
+      team["absent"] = not team.get("absent", False)
+      new_state = team["absent"]
+      found = True
+      break
+  if found:
+    save_room_data(room_id, room_data)
+  return jsonify({"success": found, "id": target_id, "absent": new_state})
 
 
 @app.route("/api/reset_match", methods=["POST"])
 def reset_match():
-    save_state_for_undo()
-    teams = load()
-    for team in teams:
-        team["kills"] = 0
-        team["position"] = 0
-        team["points"] = 0
-        team["placement_points"] = 0
-        team["players"] = [1] * len(team.get("players", [1, 1, 1, 1]))
-        team["elim_ts"] = 0
-        team["match_saved_flag"] = False
-    save(teams)
-    return jsonify({"success": True})
+  room_id = get_room_id()
+  room_data = load_room_data(room_id)
+  save_state_for_undo(room_data)
+  teams = room_data.get("teams", [])
+  for team in teams:
+    team["kills"] = 0
+    team["position"] = 0
+    team["points"] = 0
+    team["placement_points"] = 0
+    team["players"] = [1] * len(team.get("players", [1, 1, 1, 1]))
+    team["elim_ts"] = 0
+    team["match_saved_flag"] = False
+  save_room_data(room_id, room_data)
+  return jsonify({"success": True})
 
 
 @app.route("/api/update", methods=["POST"])
 def update():
-    data = request.get_json(silent=True) or request.form or {}
-    save_state_for_undo()
-    teams = load()
-    team_id = str(data.get("id", "")).strip()
-    total_active = len([t for t in teams if not t.get("absent")])
+  room_id = get_room_id()
+  data = request.get_json(silent=True) or request.form or {}
+  room_data = load_room_data(room_id)
+  save_state_for_undo(room_data)
 
-    for team in teams:
-        if str(team.get("id", "")).strip() != team_id:
-            continue
-        if "name" in data:
-            team["name"] = data["name"]
-        if "player_count" in data:
-            new_count = int(data["player_count"])
-            current = team.get("players", [1, 1, 1, 1])
-            if new_count > len(current):
-                current.extend([1] * (new_count - len(current)))
-            elif new_count < len(current):
-                current = current[:new_count]
-            team["players"] = current
-            if sum(team["players"]) == 0 and team.get("position", 0) == 0:
-                assigned = [
-                    t.get("position", 0) for t in teams if t.get("position", 0) > 0
-                ]
-                for p in range(total_active, 1, -1):
-                    if p not in assigned:
-                        team["position"] = p
-                        break
-                team["elim_ts"] = time.time()
-            elif sum(team["players"]) > 0 and team.get("position", 0) > 0:
-                team["position"] = 0
-                team["elim_ts"] = 0
+  teams = room_data.setdefault("teams", [])
+  team_id = str(data.get("id", "")).strip()
+  total_active = len([t for t in teams if not t.get("absent")])
 
-        if "player" in data:
-            player = int(data["player"])
-            if 0 <= player < len(team["players"]):
-                was_dead = sum(team["players"]) == 0
-                team["players"][player] = 0 if team["players"][player] else 1
-                now_alive = sum(team["players"])
-                if now_alive == 0 and team.get("position", 0) == 0:
-                    assigned = [
-                        t.get("position", 0) for t in teams if t.get("position", 0) > 0
-                    ]
-                    for p in range(total_active, 1, -1):
-                        if p not in assigned:
-                            team["position"] = p
-                            break
-                    team["elim_ts"] = time.time()
-                elif was_dead and now_alive > 0:
-                    team["position"] = 0
+  for team in teams:
+    if str(team.get("id", "")).strip() != team_id:
+      continue
+    if "name" in data:
+      team["name"] = data["name"]
+    if "player_count" in data:
+      new_count = int(data["player_count"])
+      current = team.get("players", [1, 1, 1, 1])
+      if new_count > len(current):
+        current.extend([1] * (new_count - len(current)))
+      elif new_count < len(current):
+        current = current[:new_count]
+      team["players"] = current
+      if sum(team["players"]) == 0 and team.get("position", 0) == 0:
+        assigned = [
+            t.get("position", 0) for t in teams if t.get("position", 0) > 0
+        ]
+        for p in range(total_active, 1, -1):
+          if p not in assigned:
+            team["position"] = p
+            break
+        team["elim_ts"] = time.time()
+      elif sum(team["players"]) > 0 and team.get("position", 0) > 0:
+        team["position"] = 0
+        team["elim_ts"] = 0
 
-        if "kills_change" in data:
-            team["kills"] = max(0, team.get("kills", 0) + int(data["kills_change"]))
-        if "position" in data:
-            team["position"] = int(data["position"])
+    if "player" in data:
+      player = int(data["player"])
+      if 0 <= player < len(team["players"]):
+        was_dead = sum(team["players"]) == 0
+        team["players"][player] = 0 if team["players"][player] else 1
+        now_alive = sum(team["players"])
+        if now_alive == 0 and team.get("position", 0) == 0:
+          assigned = [
+              t.get("position", 0) for t in teams if t.get("position", 0) > 0
+          ]
+          for p in range(total_active, 1, -1):
+            if p not in assigned:
+              team["position"] = p
+              break
+          team["elim_ts"] = time.time()
+        elif was_dead and now_alive > 0:
+          team["position"] = 0
 
-    save(teams)
-    return jsonify({"success": True})
+    if "kills_change" in data:
+      team["kills"] = max(0, team.get("kills", 0) + int(data["kills_change"]))
+    if "position" in data:
+      team["position"] = int(data["position"])
+
+  auto_assign_winner_if_one_left(teams)
+  recalculate_all(teams)
+  save_room_data(room_id, room_data)
+  return jsonify({"success": True})
 
 
 @app.route("/api/eliminate", methods=["POST"])
 def eliminate():
-    data = request.get_json(silent=True) or request.form or {}
-    save_state_for_undo()
-    teams = load()
-    team_id = str(data.get("id", "")).strip()
-    total_active = len([t for t in teams if not t.get("absent")])
+  room_id = get_room_id()
+  data = request.get_json(silent=True) or request.form or {}
+  room_data = load_room_data(room_id)
+  save_state_for_undo(room_data)
 
-    for team in teams:
-        if str(team.get("id", "")).strip() == team_id:
-            team["players"] = [0] * len(team.get("players", [1, 1, 1, 1]))
-            if team.get("position", 0) == 0:
-                assigned = [
-                    t.get("position", 0) for t in teams if t.get("position", 0) > 0
-                ]
-                for p in range(total_active, 1, -1):
-                    if p not in assigned:
-                        team["position"] = p
-                        break
-                team["elim_ts"] = time.time()
+  teams = room_data.setdefault("teams", [])
+  team_id = str(data.get("id", "")).strip()
+  total_active = len([t for t in teams if not t.get("absent")])
+
+  for team in teams:
+    if str(team.get("id", "")).strip() == team_id:
+      team["players"] = [0] * len(team.get("players", [1, 1, 1, 1]))
+      if team.get("position", 0) == 0:
+        assigned = [
+            t.get("position", 0) for t in teams if t.get("position", 0) > 0
+        ]
+        for p in range(total_active, 1, -1):
+          if p not in assigned:
+            team["position"] = p
             break
+        team["elim_ts"] = time.time()
+      break
 
-    save(teams)
-    return jsonify({"success": True})
+  auto_assign_winner_if_one_left(teams)
+  recalculate_all(teams)
+  save_room_data(room_id, room_data)
+  return jsonify({"success": True})
 
 
 @app.route("/api/save_match_overall", methods=["POST"])
 def save_match_overall():
-    save_state_for_undo()
-    teams = load()
-    if teams and all(
-        t.get("match_saved_flag", False) for t in teams if not t.get("absent")
-    ):
-        return (
-            jsonify({
-                "error": "Match already saved! Click NEW MATCH before saving again."
-            }),
-            400,
-        )
+  room_id = get_room_id()
+  room_data = load_room_data(room_id)
+  teams = room_data.setdefault("teams", [])
 
-    auto_assign_winner_if_one_left(teams)
-    recalculate_all(teams)
+  if teams and all(
+      t.get("match_saved_flag", False) for t in teams if not t.get("absent")
+  ):
+    return (
+        jsonify({
+            "error": "Match already saved! Click NEW MATCH before saving again."
+        }),
+        400,
+    )
 
-    current_match_data = []
-    for t in teams:
-        if not t.get("absent", False):
-            t["matches_played"] = t.get("matches_played", 0) + 1
-            t["overall_kills"] = t.get("overall_kills", 0) + t.get("kills", 0)
-            t["overall_place_pts"] = t.get("overall_place_pts", 0) + t.get(
-                "placement_points", 0
-            )
-            t["overall_pts"] = t.get("overall_pts", 0) + t.get("points", 0)
-            if t.get("position", 0) == 1:
-                t["wwcd"] = t.get("wwcd", 0) + 1
-            t["match_saved_flag"] = True
+  save_state_for_undo(room_data)
+  auto_assign_winner_if_one_left(teams)
+  recalculate_all(teams)
 
-        current_match_data.append({
-            "id": t["id"],
-            "name": t["name"],
-            "kills": t.get("kills", 0),
-            "placement_points": t.get("placement_points", 0),
-            "total_pts": t.get("points", 0),
-            "position": t.get("position", 0),
-            "absent": t.get("absent", False),
-        })
+  current_match_data = []
+  for t in teams:
+    if not t.get("absent", False):
+      t["matches_played"] = t.get("matches_played", 0) + 1
+      t["overall_kills"] = t.get("overall_kills", 0) + t.get("kills", 0)
+      t["overall_place_pts"] = t.get("overall_place_pts", 0) + t.get(
+          "placement_points", 0
+      )
+      t["overall_pts"] = t.get("overall_pts", 0) + t.get("points", 0)
+      if t.get("position", 0) == 1:
+        t["wwcd"] = t.get("wwcd", 0) + 1
+      t["match_saved_flag"] = True
 
-    history = []
-    if os.path.exists(HISTORY_FILE):
-        try:
-            with open(HISTORY_FILE, "r", encoding="utf-8") as hf:
-                c = hf.read().strip()
-                if c:
-                    history = json.loads(c)
-        except Exception:
-            history = []
-
-    match_number = len(history) + 1
-    cfg = load_config()
-
-    history.append({
-        "match_num": match_number,
-        "match_name": cfg.get("match", f"MATCH {match_number}"),
-        "map": cfg.get("map", "ERANGEL"),
-        "timestamp": time.strftime("%d %b %Y, %I:%M %p"),
-        "teams": copy.deepcopy(current_match_data),
+    current_match_data.append({
+        "id": t["id"],
+        "name": t["name"],
+        "kills": t.get("kills", 0),
+        "placement_points": t.get("placement_points", 0),
+        "total_pts": t.get("points", 0),
+        "position": t.get("position", 0),
+        "absent": t.get("absent", False),
     })
 
-    safe_write_json(HISTORY_FILE, history)
-    cfg["match"] = f"MATCH {match_number + 1}"
-    save_config(cfg)
-    save(teams)
-    return jsonify({"success": True, "next_match": f"MATCH {match_number + 1}"})
+  history = room_data.setdefault("history", [])
+  match_number = len(history) + 1
+  cfg = room_data.setdefault("config", {})
 
+  history.append({
+      "match_num": match_number,
+      "match_name": cfg.get("match", f"MATCH {match_number}"),
+      "map": cfg.get("map", "ERANGEL"),
+      "timestamp": time.strftime("%d %b %Y, %I:%M %p"),
+      "teams": copy.deepcopy(current_match_data),
+  })
 
-@app.route("/api/upload_logo", methods=["POST"])
-def upload_logo():
-    team_id = request.form.get("id")
-    file = request.files.get("logo")
-    
-    if not file or not team_id:
-        return jsonify({"success": False, "error": "Missing file or ID"})
-        
-    ext = file.filename.rsplit('.', 1)[-1].lower()
-    if ext not in ['png', 'jpg', 'jpeg', 'webp', 'gif']:
-        return jsonify({"success": False, "error": "Invalid format. Use PNG, JPG, WEBP, or GIF"})
-        
-    filename = f"team_{team_id}.{ext}"
-    filepath = os.path.join(app.config["UPLOAD_FOLDER"], filename)
-    file.save(filepath)
-    
-    save_state_for_undo()
-    teams = load()
-    for t in teams:
-        if str(t.get("id", "")) == str(team_id):
-            t["logo"] = f"/static/logos/{filename}?v={int(time.time())}"
-            break
-            
-    save(teams)
-    return jsonify({"success": True})
+  cfg["match"] = f"MATCH {match_number + 1}"
+  save_room_data(room_id, room_data)
+  return jsonify({"success": True, "next_match": f"MATCH {match_number + 1}"})
 
 
 if __name__ == "__main__":
-    local_ip = get_local_ip()
-    print("=" * 65)
-    print("🚀 ESPORTS NATION BROADCAST MASTER ENGINE READY")
-    print(f"👉 PC Browser Link    : http://127.0.0.1:5000/")
-    print(f"👉 Mobile Control Link: http://{local_ip}:5000/")
-    print("=" * 65)
-    app.run(host="0.0.0.0", port=5000, threaded=True)
+  local_ip = get_local_ip()
+  print("=" * 65)
+  print("🚀 ESPORTS NATION BROADCAST MASTER ENGINE READY")
+  print(f"👉 Local Access : http://127.0.0.1:5000/?room=DEFAULT")
+  print(f"👉 LAN / Mobile : http://{local_ip}:5000/?room=DEFAULT")
+  print("=" * 65)
+  app.run(host="0.0.0.0", port=5000, threaded=True)
